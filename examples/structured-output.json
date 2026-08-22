@@ -1,0 +1,37 @@
+{
+  "data": [
+    {
+      "schemaVersion": 1,
+      "playerId": "openligadb:player:finn-krueger",
+      "sourceId": "openligadb",
+      "playerName": "Finn Krüger",
+      "team": {
+        "teamId": "openligadb:rheinland-fc-04",
+        "name": "Rheinland FC 04"
+      },
+      "position": "forward",
+      "shirtNumber": 11,
+      "season": "2025",
+      "stats": {
+        "appearances": 33,
+        "goals": 18,
+        "assists": 5,
+        "yellowCards": 3,
+        "redCards": 0,
+        "minutesPlayed": 2820
+      },
+      "observedAt": "2026-08-20T14:00:00.000Z",
+      "latestSnapshot": {
+        "snapshotId": "eaaea76a-cb86-44c6-9846-ec287979ca9a",
+        "version": 1
+      }
+    }
+  ],
+  "pagination": {
+    "limit": 1,
+    "offset": 0,
+    "total": 3,
+    "hasMore": true
+  },
+  "generatedAt": "2026-08-22T19:45:11.702Z"
+}

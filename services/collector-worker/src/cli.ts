@@ -1,40 +1,46 @@
-import {
-  tenderWithCorrigendumFixture,
-  validTenderFixture,
-} from "@bidsentinel/contracts/fixtures";
+import { validPlayerFixture } from "@bidsentinel/contracts/fixtures";
 
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 
-const pipeline = new BidSentinelPipeline();
+const pipeline = new CardPulsePipeline();
+const sourceId = validPlayerFixture.sourceId;
 const baseContext = {
-  sourceId: "gem",
+  sourceId,
   extractorVersion: "fixture-v1",
-  observedAt: validTenderFixture.observedAt,
+  observedAt: validPlayerFixture.observedAt,
 };
 
-const initial = pipeline.process(validTenderFixture, baseContext);
+const initial = pipeline.process(validPlayerFixture, baseContext);
 const invalid = pipeline.process(
-  { ...validTenderFixture, submissionDeadline: "invalid-date" },
-  { ...baseContext, observedAt: "2026-08-20T05:05:00.000Z" },
+  {
+    ...validPlayerFixture,
+    stats: { ...validPlayerFixture.stats, goals: "eighteen" },
+  },
+  { ...baseContext, observedAt: "2026-08-20T14:05:00.000Z" },
 );
-const recovered = pipeline.process(tenderWithCorrigendumFixture, {
-  ...baseContext,
-  observedAt: tenderWithCorrigendumFixture.observedAt,
-});
+const amended = pipeline.process(
+  {
+    ...validPlayerFixture,
+    stats: { ...validPlayerFixture.stats, goals: 21, appearances: 34 },
+    observedAt: "2026-08-21T14:00:00.000Z",
+  },
+  { ...baseContext, observedAt: "2026-08-21T14:00:00.000Z" },
+);
 
 console.log(
   JSON.stringify(
     {
-      outcomes: [initial.outcome, invalid.outcome, recovered.outcome],
+      outcomes: [initial.outcome, invalid.outcome, amended.outcome],
       snapshotVersions: pipeline.snapshots
-        .list(validTenderFixture.tenderId)
+        .list(validPlayerFixture.playerId)
         .map((snapshot) => snapshot.version),
       changeKinds: pipeline.changeEvents
         .list()
         .flatMap((event) => event.changes.map((change) => change.kind)),
-      quarantinedExtractions: pipeline.quarantines.listBySource("gem").length,
-      recoveryEvidence: pipeline.recoveryEvidence.listBySource("gem").length,
-      sourceState: pipeline.sourceHealth.get("gem")?.state,
+      quarantinedExtractions:
+        pipeline.quarantines.listBySource(sourceId).length,
+      recoveryEvidence: pipeline.recoveryEvidence.listBySource(sourceId).length,
+      sourceState: pipeline.sourceHealth.get(sourceId)?.state,
     },
     null,
     2,

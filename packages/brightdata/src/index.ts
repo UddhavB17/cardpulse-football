@@ -1,16 +1,17 @@
-import type { Tender } from "@bidsentinel/contracts";
+import type { FootballRecord } from "@bidsentinel/contracts";
 
 /**
- * Provider-neutral boundary for a future public-web collection adapter.
- * The MVP intentionally ships without credentials or network behavior.
+ * Provider-neutral boundary in front of the Bright Data Scraper Studio HTTP
+ * surface. Transport behavior here is domain-neutral; the only domain-facing
+ * piece is the row mapper at the bottom of this file.
  */
-export interface TenderCollectionRequest {
+export interface FootballCollectionRequest {
   sourceId: string;
   targetUrl: string;
   requestedAt: string;
 }
 
-export interface TenderCollectionBatch {
+export interface FootballCollectionBatch {
   sourceId: string;
   collectorId: string;
   extractorVersion: string;
@@ -18,12 +19,12 @@ export interface TenderCollectionBatch {
   payloads: unknown[];
 }
 
-export interface TenderCollectionProvider {
-  collect(request: TenderCollectionRequest): Promise<TenderCollectionBatch>;
+export interface FootballCollectionProvider {
+  collect(request: FootballCollectionRequest): Promise<FootballCollectionBatch>;
 }
 
-export interface CanonicalTenderSink {
-  accept(tender: Tender): Promise<void>;
+export interface CanonicalFootballRecordSink {
+  accept(record: FootballRecord): Promise<void>;
 }
 
 export class ExternalCollectionNotConfiguredError extends Error {
@@ -67,8 +68,10 @@ export class BrightDataApiError extends Error {
   }
 }
 
-export class UnconfiguredBrightDataProvider implements TenderCollectionProvider {
-  collect(_request: TenderCollectionRequest): Promise<TenderCollectionBatch> {
+export class UnconfiguredBrightDataProvider implements FootballCollectionProvider {
+  collect(
+    _request: FootballCollectionRequest,
+  ): Promise<FootballCollectionBatch> {
     return Promise.reject(new ExternalCollectionNotConfiguredError());
   }
 }
@@ -86,7 +89,7 @@ export interface BrightDataCollectionProviderOptions {
   nowFn?: () => number;
 }
 
-export class BrightDataCollectionProvider implements TenderCollectionProvider {
+export class BrightDataCollectionProvider implements FootballCollectionProvider {
   private readonly apiToken: string;
   private readonly collectorId: string;
   private readonly pollingIntervalMs: number;
@@ -119,8 +122,8 @@ export class BrightDataCollectionProvider implements TenderCollectionProvider {
   }
 
   async collect(
-    request: TenderCollectionRequest,
-  ): Promise<TenderCollectionBatch> {
+    request: FootballCollectionRequest,
+  ): Promise<FootballCollectionBatch> {
     const triggerUrl = new URL("https://api.brightdata.com/dca/trigger");
     triggerUrl.searchParams.set("collector", this.collectorId);
     triggerUrl.searchParams.set("queue_next", "1");
@@ -155,7 +158,7 @@ export class BrightDataCollectionProvider implements TenderCollectionProvider {
     const rawRows = await this.pollDataset(collectionId);
     const receivedAt = new Date().toISOString();
     const payloads = rawRows.map((row) =>
-      mapRawRowToTender(row, request.sourceId, receivedAt),
+      mapRawRowToFootballRecord(row, request.sourceId, receivedAt),
     );
 
     return {
@@ -346,7 +349,16 @@ export class BrightDataCollectionProvider implements TenderCollectionProvider {
   }
 }
 
-export function mapRawRowToTender(
+const FOOTBALL_ENTITY_TYPES = new Set(["player", "team", "standing"]);
+
+/**
+ * Map one raw Bright Data dataset row into a canonical football record shape
+ * (`PlayerCardSchema`, `TeamSummaryRecordSchema`, or `StandingEntrySchema`
+ * field names). This is deliberately tolerant: unknown or malformed values are
+ * passed through so the strict contract validation downstream quarantines
+ * them with their raw payload. Mapping never invents data it did not find.
+ */
+export function mapRawRowToFootballRecord(
   row: unknown,
   sourceId: string,
   observedAt: string,
@@ -359,11 +371,11 @@ export function mapRawRowToTender(
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return undefined;
     const record = obj as Record<string, unknown>;
     for (const k of keys) {
-      if (k in record) return record[k];
+      if (k in record && record[k] !== undefined) return record[k];
       const normalizedK = k.toLowerCase().replace(/[^a-z0-9]/g, "");
       for (const rawKey of Object.keys(record)) {
         const normalizedRawKey = rawKey.toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (normalizedK === normalizedRawKey) {
+        if (normalizedK === normalizedRawKey && record[rawKey] !== undefined) {
           return record[rawKey];
         }
       }
@@ -371,125 +383,178 @@ export function mapRawRowToTender(
     return undefined;
   };
 
-  const rawExternalId = getField(row, ["externalId", "external_id", "id"]) as
-    string | undefined;
-  const rawTenderId = getField(row, ["tenderId", "tender_id"]) as
-    string | undefined;
-  const tenderId =
-    rawTenderId ?? (rawExternalId ? `${sourceId}:${rawExternalId}` : undefined);
+  /** Numeric-looking values become numbers; anything else passes through. */
+  const num = (value: unknown): unknown => {
+    if (value === null || value === undefined || value === "") return value;
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return value;
+  };
 
-  const rawBuyer = getField(row, ["buyer"]);
-  let buyer: unknown = undefined;
-  if (rawBuyer && typeof rawBuyer === "object" && !Array.isArray(rawBuyer)) {
-    buyer = {
-      name: getField(rawBuyer, ["name"]),
-      countryCode:
-        getField(rawBuyer, ["countryCode", "country_code", "country"]) ?? null,
-    };
-  } else {
-    const buyerName = getField(row, ["buyerName", "buyer_name"]);
-    const buyerCountry = getField(row, [
-      "buyerCountry",
-      "buyer_country",
-      "buyerCountryCode",
-      "buyer_country_code",
-    ]);
-    if (buyerName !== undefined || buyerCountry !== undefined) {
-      buyer = {
-        name: buyerName,
-        countryCode: buyerCountry ?? null,
+  const explicitType = getField(row, ["entityType", "entity_type"]);
+  const entityType =
+    typeof explicitType === "string" && FOOTBALL_ENTITY_TYPES.has(explicitType)
+      ? explicitType
+      : inferEntityType(row, getField);
+
+  const externalId = getField(row, ["externalId", "external_id", "id"]);
+  const compositeId =
+    externalId === undefined || externalId === null
+      ? undefined
+      : `${sourceId}:${String(externalId)}`;
+
+  const base = {
+    schemaVersion: 1,
+    entityType,
+    sourceId: getField(row, ["sourceId", "source_id"]) ?? sourceId,
+    externalId,
+    sourceUrl:
+      getField(row, ["sourceUrl", "source_url"]) ??
+      getField(row, ["url", "link"]),
+    observedAt,
+  };
+
+  if (entityType === "player") {
+    const rawTeam = getField(row, ["team"]);
+    let team: unknown;
+    if (rawTeam && typeof rawTeam === "object" && !Array.isArray(rawTeam)) {
+      team = {
+        teamId: getField(rawTeam, ["teamId", "team_id", "id"]),
+        name: getField(rawTeam, ["name", "teamName", "team_name"]),
+      };
+    } else {
+      team = {
+        teamId: getField(row, ["teamId", "team_id"]),
+        name: getField(row, ["teamName", "team_name", "team"]),
       };
     }
+
+    const rawStats = getField(row, ["stats"]);
+    const statField = (keys: string[]): unknown =>
+      rawStats && typeof rawStats === "object" && !Array.isArray(rawStats)
+        ? num(getField(rawStats, keys))
+        : num(getField(row, keys));
+
+    return {
+      ...base,
+      playerId: getField(row, ["playerId", "player_id"]) ?? compositeId,
+      playerName: getField(row, ["playerName", "player_name", "name"]),
+      team,
+      position: getField(row, [
+        "position",
+        "playerPosition",
+        "player_position",
+      ]),
+      shirtNumber: num(getField(row, ["shirtNumber", "shirt_number"])) ?? null,
+      nationality: getField(row, ["nationality", "nationalityCountry"]) ?? null,
+      season: getField(row, ["season", "seasonYear", "season_year"]),
+      stats: {
+        appearances: statField(["appearances", "apps"]),
+        goals: statField(["goals", "goalsScored", "goals_scored"]),
+        assists: statField(["assists"]),
+        yellowCards: statField(["yellowCards", "yellow_cards", "yellows"]),
+        redCards: statField(["redCards", "red_cards", "reds"]),
+        minutesPlayed: statField([
+          "minutesPlayed",
+          "minutes_played",
+          "minutes",
+        ]),
+      },
+    };
   }
 
-  const rawEstVal = getField(row, ["estimatedValue", "estimated_value"]);
-  let estimatedValue: unknown = null;
-  if (rawEstVal && typeof rawEstVal === "object" && !Array.isArray(rawEstVal)) {
-    const amountVal = getField(rawEstVal, ["amount"]);
-    const amount =
-      amountVal !== undefined && amountVal !== null
-        ? Number(amountVal)
+  if (entityType === "standing") {
+    const rawTeam = getField(row, ["team"]);
+    const nestedTeamId =
+      rawTeam && typeof rawTeam === "object" && !Array.isArray(rawTeam)
+        ? getField(rawTeam, ["teamId", "team_id", "id"])
         : undefined;
-    estimatedValue = {
-      amount,
-      currency: getField(rawEstVal, ["currency"]),
+    const nestedTeamName =
+      rawTeam && typeof rawTeam === "object" && !Array.isArray(rawTeam)
+        ? getField(rawTeam, ["name"])
+        : undefined;
+    return {
+      ...base,
+      competition: getField(row, [
+        "competition",
+        "competitionName",
+        "competition_name",
+        "league",
+        "leagueName",
+        "league_name",
+      ]),
+      season: getField(row, ["season", "seasonYear", "season_year"]),
+      teamId: getField(row, ["teamId", "team_id"]) ?? nestedTeamId,
+      teamName: getField(row, ["teamName", "team_name"]) ?? nestedTeamName,
+      rank: num(getField(row, ["rank", "position", "placement"])),
+      played: num(getField(row, ["played", "matchesPlayed", "matches_played"])),
+      won: num(getField(row, ["won", "wins"])),
+      drawn: num(getField(row, ["drawn", "draws", "tied"])),
+      lost: num(getField(row, ["lost", "losses", "defeats"])),
+      goalsFor: num(
+        getField(row, ["goalsFor", "goals_for", "scored", "goalsScored"]),
+      ),
+      goalsAgainst: num(
+        getField(row, ["goalsAgainst", "goals_against", "conceded"]),
+      ),
+      points: num(getField(row, ["points"])),
     };
-  } else {
-    const amountVal = getField(row, [
-      "amount",
-      "estimated_amount",
-      "estimatedValueAmount",
-      "value",
-    ]);
-    const currency = getField(row, [
-      "currency",
-      "estimated_currency",
-      "estimatedValueCurrency",
-    ]);
-    if (amountVal !== undefined || currency !== undefined) {
-      const amount =
-        amountVal !== undefined && amountVal !== null
-          ? Number(amountVal)
-          : undefined;
-      estimatedValue = {
-        amount,
-        currency,
-      };
-    }
   }
-
-  const rawDocs = getField(row, ["documents"]);
-  const documents = Array.isArray(rawDocs)
-    ? rawDocs.map((doc) => {
-        if (doc === null || typeof doc !== "object" || Array.isArray(doc))
-          return doc;
-        return {
-          id: getField(doc, ["id"]),
-          title: getField(doc, ["title"]),
-          url: getField(doc, ["url", "link"]),
-          publishedAt: getField(doc, ["publishedAt", "published_at"]) ?? null,
-        };
-      })
-    : [];
-
-  const rawCorrigenda = getField(row, ["corrigenda"]);
-  const corrigenda = Array.isArray(rawCorrigenda)
-    ? rawCorrigenda.map((corr) => {
-        if (corr === null || typeof corr !== "object" || Array.isArray(corr))
-          return corr;
-        return {
-          id: getField(corr, ["id"]),
-          title: getField(corr, ["title"]),
-          description: getField(corr, ["description"]) ?? null,
-          publishedAt: getField(corr, ["publishedAt", "published_at"]),
-          url: getField(corr, ["url", "link"]) ?? null,
-        };
-      })
-    : [];
 
   return {
-    schemaVersion: 1,
-    tenderId,
-    sourceId: getField(row, ["sourceId", "source_id"]) ?? sourceId,
-    externalId: rawExternalId,
-    title: getField(row, ["title"]),
-    description: getField(row, ["description"]) ?? null,
-    buyer,
-    status: getField(row, ["status"]),
-    publishedAt: getField(row, ["publishedAt", "published_at"]) ?? null,
-    submissionDeadline:
-      getField(row, ["submissionDeadline", "submission_deadline"]) ?? null,
-    url: getField(row, ["url", "link"]),
-    estimatedValue,
-    documents,
-    corrigenda,
-    observedAt,
+    ...base,
+    teamId: getField(row, ["teamId", "team_id"]) ?? compositeId,
+    name: getField(row, ["name", "teamName", "team_name"]),
+    shortName: getField(row, ["shortName", "short_name"]) ?? null,
+    country: getField(row, ["country", "countryCode", "country_code"]) ?? null,
+    city: getField(row, ["city"]) ?? null,
+    stadium: getField(row, ["stadium", "venue"]) ?? null,
+    founded:
+      num(getField(row, ["founded", "foundingYear", "founding_year"])) ?? null,
+    coach:
+      getField(row, ["coach", "headCoach", "head_coach", "manager"]) ?? null,
   };
 }
 
-export interface TenderHealingProvider {
+/**
+ * Best-effort entity-type inference from the row's own field names. An
+ * explicit `entityType` field always wins; otherwise standing markers beat
+ * player markers, and anything else is treated as a team summary.
+ */
+function inferEntityType(
+  row: unknown,
+  getField: (obj: unknown, keys: string[]) => unknown,
+): string {
+  const hasStandingMarker = [
+    ["rank"],
+    ["played"],
+    ["points"],
+    ["goalsAgainst", "goals_against"],
+    ["won"],
+  ].some((keys) => getField(row, keys) !== undefined);
+  if (hasStandingMarker) return "standing";
+
+  const hasPlayerMarker = [
+    ["playerName", "player_name"],
+    ["position"],
+    ["appearances", "apps"],
+    ["assists"],
+    ["yellowCards", "yellow_cards"],
+    ["redCards", "red_cards"],
+    ["minutesPlayed", "minutes_played"],
+    ["shirtNumber", "shirt_number"],
+  ].some((keys) => getField(row, keys) !== undefined);
+  if (hasPlayerMarker) return "player";
+
+  return "team";
+}
+
+export interface FootballHealingProvider {
   triggerRefactor(collectorId: string, prompt: string): Promise<void>;
-  pollRefactorProgress(collectorId: string): Promise<TenderHealingProgress>;
+  pollRefactorProgress(collectorId: string): Promise<FootballHealingProgress>;
   resumeAutomationJob(
     collectorId: string,
     approve: boolean,
@@ -497,19 +562,19 @@ export interface TenderHealingProvider {
   ): Promise<void>;
 }
 
-export interface TenderHealingProgress {
+export interface FootballHealingProgress {
   status: string;
   step?: string;
   previewResult: unknown[];
 }
 
-export class UnconfiguredBrightDataHealingProvider implements TenderHealingProvider {
+export class UnconfiguredBrightDataHealingProvider implements FootballHealingProvider {
   async triggerRefactor(_collectorId: string, _prompt: string): Promise<void> {
     throw new ExternalCollectionNotConfiguredError();
   }
   async pollRefactorProgress(
     _collectorId: string,
-  ): Promise<TenderHealingProgress> {
+  ): Promise<FootballHealingProgress> {
     throw new ExternalCollectionNotConfiguredError();
   }
   async resumeAutomationJob(
@@ -521,7 +586,7 @@ export class UnconfiguredBrightDataHealingProvider implements TenderHealingProvi
   }
 }
 
-export class BrightDataHealingProvider implements TenderHealingProvider {
+export class BrightDataHealingProvider implements FootballHealingProvider {
   private readonly apiToken: string;
   private readonly maxRetries: number;
   private readonly requestTimeoutMs: number;
@@ -580,7 +645,7 @@ export class BrightDataHealingProvider implements TenderHealingProvider {
 
   async pollRefactorProgress(
     collectorId: string,
-  ): Promise<TenderHealingProgress> {
+  ): Promise<FootballHealingProgress> {
     const url = this.collectorEndpoint(
       collectorId,
       "refactor_template/progress",
@@ -754,7 +819,7 @@ export class BrightDataHealingProvider implements TenderHealingProvider {
   }
 }
 
-export class MockBrightDataHealingProvider implements TenderHealingProvider {
+export class MockBrightDataHealingProvider implements FootballHealingProvider {
   private status = "pending_answer";
 
   constructor(private readonly previewResult: unknown[] = []) {}
@@ -767,7 +832,7 @@ export class MockBrightDataHealingProvider implements TenderHealingProvider {
 
   async pollRefactorProgress(
     _collectorId: string,
-  ): Promise<TenderHealingProgress> {
+  ): Promise<FootballHealingProgress> {
     return {
       status: this.status,
       previewResult:

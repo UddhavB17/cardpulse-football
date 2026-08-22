@@ -5,7 +5,7 @@ import {
 } from "node:http";
 
 import {
-  buildTenderForMode,
+  buildRecordsForMode,
   chaosModes,
   fixtureEnvelope,
   isChaosMode,
@@ -56,119 +56,214 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#039;");
 }
 
-function formatDeadline(value: string | null): string {
-  if (value === null) return "Not published";
-  return new Intl.DateTimeFormat("en-IN", {
-    dateStyle: "long",
-    timeStyle: "short",
-    timeZone: "Asia/Kolkata",
-  }).format(new Date(value));
-}
-
-function documentShell(title: string, content: string): string {
-  return `<!doctype html>
+const pageShell = (title: string, content: string): string =>
+  `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
     <style>
-      :root { color: #17221d; background: #f5f6f2; font-family: Inter, system-ui, sans-serif; }
+      :root { color: #10233f; background: #f4f7fb; font-family: Inter, system-ui, sans-serif; }
       * { box-sizing: border-box; }
       body { margin: 0; }
       main { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 72px; }
-      header { margin-bottom: 34px; border-bottom: 1px solid #ccd5ce; padding-bottom: 24px; }
-      h1 { margin: 0 0 10px; font-size: clamp(2rem, 5vw, 3.5rem); letter-spacing: -.045em; }
+      header { border-bottom: 1px solid #c9d6e8; margin-bottom: 30px; padding-bottom: 22px; }
+      h1 { letter-spacing: -.04em; margin: 0 0 10px; font-size: clamp(2rem, 5vw, 3.25rem); }
       h2, h3, p { margin-top: 0; }
-      .eyebrow { color: #276445; font-size: .75rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-      .muted { color: #5a6860; }
-      table { width: 100%; border-collapse: collapse; background: #fff; }
-      th, td { border: 1px solid #c7d1c9; padding: 16px; text-align: left; vertical-align: top; }
-      th { width: 18%; color: #4d5f54; background: #edf2ed; }
-      .tender-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-      .notice-card { border: 1px solid #c7d1c9; border-radius: 16px; padding: 24px; background: #fff; box-shadow: 0 14px 38px rgb(23 34 29 / 7%); }
-      .notice-card .deadline { margin-top: 22px; border-top: 1px solid #d9dfda; padding-top: 18px; }
-      .corrigendum { margin-top: 18px; border-left: 4px solid #bd6b00; padding: 14px 16px; background: #fff3df; }
+      .eyebrow { color: #0b5c3b; font-size: .75rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+      .muted { color: #55677e; }
+      table { background: #fff; border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #c3d0e0; padding: 14px 16px; text-align: left; }
+      th { background: #eaf1f9; color: #40546c; }
+      .player-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+      .player-card { border: 1px solid #c3d0e0; border-radius: 16px; background: #fff; box-shadow: 0 14px 38px rgb(16 35 63 / 7%); padding: 22px; }
+      .player-card h2 { margin-bottom: 4px; }
+      .player-card .club { color: #55677e; margin-top: 0; }
+      .statline { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 0; }
+      .stat { border-radius: 10px; background: #eef4fb; padding: 10px 12px; }
+      .stat dt { color: #40546c; font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      .stat dd { font-size: 1.45rem; font-weight: 800; margin: 0; }
+      .table-card { border: 1px solid #c3d0e0; border-radius: 16px; background: #fff; padding: 22px; margin-top: 26px; }
+      button { width: 100%; border: 1px solid #0b5c3b; border-radius: 9px; padding: 12px 16px; color: #fff; background: #0b5c3b; cursor: pointer; font: inherit; font-weight: 750; text-align: left; }
+      code { border-radius: 5px; padding: 2px 6px; background: #e4ebf4; }
       .control-list { display: grid; gap: 10px; max-width: 520px; }
-      button { width: 100%; border: 1px solid #1d6240; border-radius: 9px; padding: 12px 16px; color: #fff; background: #1d6240; font: inherit; font-weight: 750; cursor: pointer; text-align: left; }
-      code { border-radius: 5px; padding: 2px 6px; background: #e7ebe7; }
-      @media (max-width: 680px) { .tender-grid { grid-template-columns: 1fr; } th, td { display: block; width: 100%; } }
+      @media (max-width: 680px) { .player-grid { grid-template-columns: 1fr; } th, td { display: block; width: 100%; } }
     </style>
   </head>
   <body>${content}</body>
 </html>`;
+
+interface PlayerView {
+  playerId: string;
+  playerName: string;
+  teamName: string;
+  position: string;
+  goals: number;
+  assists: number;
+  appearances: number;
 }
 
-function renderTenderPage(mode: AvailableChaosMode): string {
-  const tender = buildTenderForMode(mode);
-  const title = escapeHtml(tender.title);
-  const buyer = escapeHtml(tender.buyer.name);
-  const externalId = escapeHtml(tender.externalId);
-  const deadline = escapeHtml(formatDeadline(tender.submissionDeadline));
-  const description = escapeHtml(
-    tender.description ?? "Description unavailable",
-  );
-  const commonHeader = `<header>
-      <p class="eyebrow">Institute procurement portal</p>
-      <h1>Current tenders</h1>
-      <p class="muted">Public notices and corrigenda. Tender reference ${externalId}.</p>
-    </header>`;
-
-  if (mode === "baseline-table") {
-    return documentShell(
-      "Current tenders",
-      `<main data-layout="table">${commonHeader}
-      <table aria-label="Current tender notices">
-        <tbody>
-          <tr><th scope="row">Reference</th><td>${externalId}</td></tr>
-          <tr><th scope="row">Tender</th><td><h2>${title}</h2><p>${description}</p></td></tr>
-          <tr><th scope="row">Buyer</th><td>${buyer}</td></tr>
-          <tr><th scope="row">Status</th><td>${escapeHtml(tender.status)}</td></tr>
-          <tr><th scope="row">Submission deadline</th><td><time datetime="${escapeHtml(tender.submissionDeadline ?? "")}">${deadline}</time></td></tr>
-          <tr><th scope="row">Corrigenda</th><td>None published</td></tr>
-        </tbody>
-      </table>
-    </main>`,
+function playerViews(records: ReturnType<typeof buildRecordsForMode>): {
+  players: PlayerView[];
+  standings: Array<{
+    rank: number;
+    teamName: string;
+    played: number;
+    points: number;
+    goalsFor: number;
+    goalsAgainst: number;
+  }>;
+} {
+  const players = records
+    .filter((record) => record.entityType === "player")
+    .map((record) => ({
+      playerId: record.playerId,
+      playerName: record.playerName,
+      teamName: record.team.name,
+      position: record.position,
+      goals: record.stats.goals,
+      assists: record.stats.assists,
+      appearances: record.stats.appearances,
+    }))
+    .sort(
+      (left, right) =>
+        right.goals - left.goals ||
+        left.playerName.localeCompare(right.playerName),
     );
-  }
 
-  const corrigendum = tender.corrigenda[0];
-  const amendmentMarkup = corrigendum
-    ? `<aside class="corrigendum" aria-label="Latest corrigendum">
-        <strong>${escapeHtml(corrigendum.title)}</strong>
-        <p>${escapeHtml(corrigendum.description ?? "No description supplied")}</p>
-      </aside>`
-    : "";
+  const standings = records
+    .filter((record) => record.entityType === "standing")
+    .sort((left, right) => left.rank - right.rank)
+    .map((record) => ({
+      rank: record.rank,
+      teamName: record.teamName,
+      played: record.played,
+      points: record.points,
+      goalsFor: record.goalsFor,
+      goalsAgainst: record.goalsAgainst,
+    }));
 
-  return documentShell(
-    "Current tenders",
-    `<main data-layout="cards">${commonHeader}
-      <section class="tender-grid" aria-label="Current tender notices">
-        <article class="notice-card">
-          <p class="eyebrow">${externalId}</p>
-          <h2>${title}</h2>
-          <p>${description}</p>
-          <p><strong>Buyer:</strong> ${buyer}</p>
-          <p><strong>Status:</strong> ${escapeHtml(tender.status)}</p>
-          <div class="deadline">
-            <p class="eyebrow">Submission deadline</p>
-            <time datetime="${escapeHtml(tender.submissionDeadline ?? "")}">${deadline}</time>
-          </div>
-          ${amendmentMarkup}
-        </article>
+  return { players, standings };
+}
+
+function renderTablePage(mode: AvailableChaosMode): string {
+  const { players, standings } = playerViews(buildRecordsForMode(mode));
+  const playerRows = players
+    .map(
+      (player) => `<tr data-player-id="${escapeHtml(player.playerId)}">
+            <td class="player-name">${escapeHtml(player.playerName)}</td>
+            <td class="team-name">${escapeHtml(player.teamName)}</td>
+            <td class="position">${escapeHtml(player.position)}</td>
+            <td class="stat-goals">${player.goals}</td>
+            <td class="stat-assists">${player.assists}</td>
+            <td class="stat-appearances">${player.appearances}</td>
+          </tr>`,
+    )
+    .join("\n");
+  const standingRows = standings
+    .map(
+      (entry) => `<tr data-rank="${entry.rank}">
+            <td class="rank">${entry.rank}</td>
+            <td class="team-name">${escapeHtml(entry.teamName)}</td>
+            <td class="played">${entry.played}</td>
+            <td class="goals-for">${entry.goalsFor}</td>
+            <td class="goals-against">${entry.goalsAgainst}</td>
+            <td class="points">${entry.points}</td>
+          </tr>`,
+    )
+    .join("\n");
+
+  return pageShell(
+    "Demo league centre",
+    `<main data-layout="table"><header>
+        <p class="eyebrow">Public demo source</p>
+        <h1>Demo league centre</h1>
+        <p class="muted">Deterministic OpenLigaDB-inspired demo statistics. Demo data only — no crests or photos.</p>
+      </header>
+      <section>
+        <h2>Player statistics</h2>
+        <table aria-label="Player statistics" data-table="players">
+          <thead>
+            <tr><th>Player</th><th>Team</th><th>Position</th><th>Goals</th><th>Assists</th><th>Appearances</th></tr>
+          </thead>
+          <tbody>
+          ${playerRows}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h2>League table</h2>
+        <table aria-label="League table" data-table="standings">
+          <thead>
+            <tr><th>Rank</th><th>Team</th><th>Played</th><th>GF</th><th>GA</th><th>Points</th></tr>
+          </thead>
+          <tbody>
+          ${standingRows}
+          </tbody>
+        </table>
+      </section>
+    </main>`,
+  );
+}
+
+function renderCardsPage(mode: AvailableChaosMode): string {
+  const { players, standings } = playerViews(buildRecordsForMode(mode));
+  const cards = players
+    .map(
+      (
+        player,
+      ) => `<article class="player-card" data-player-id="${escapeHtml(player.playerId)}">
+          <p class="eyebrow">${escapeHtml(player.position)}</p>
+          <h2 class="player-name">${escapeHtml(player.playerName)}</h2>
+          <p class="club team-name">${escapeHtml(player.teamName)}</p>
+          <dl class="statline">
+            <div class="stat"><dt>Goals</dt><dd class="stat-goals">${player.goals}</dd></div>
+            <div class="stat"><dt>Assists</dt><dd class="stat-assists">${player.assists}</dd></div>
+            <div class="stat"><dt>Apps</dt><dd class="stat-appearances">${player.appearances}</dd></div>
+          </dl>
+        </article>`,
+    )
+    .join("\n");
+  const tableRows = standings
+    .map(
+      (entry) => `<li class="table-row" data-rank="${entry.rank}">
+          <span class="rank">${entry.rank}</span>
+          <span class="team-name">${escapeHtml(entry.teamName)}</span>
+          <span class="points">${entry.points} pts</span>
+          <span class="goals-for">${entry.goalsFor}:${entry.goalsAgainst}</span>
+        </li>`,
+    )
+    .join("\n");
+
+  return pageShell(
+    "Demo league centre",
+    `<main data-layout="cards"><header>
+        <p class="eyebrow">Public demo source</p>
+        <h1>Demo league centre</h1>
+        <p class="muted">Deterministic OpenLigaDB-inspired demo statistics. Demo data only — no crests or photos.</p>
+      </header>
+      <section class="player-grid" aria-label="Player statistics">
+      ${cards}
+      </section>
+      <section class="table-card">
+        <h2>League table</h2>
+        <ol class="league-list" aria-label="League table">
+        ${tableRows}
+        </ol>
       </section>
     </main>`,
   );
 }
 
 function renderUnavailablePage(): string {
-  return documentShell(
-    "Tender portal temporarily unavailable",
+  return pageShell(
+    "Football portal temporarily unavailable",
     `<main><header>
-      <p class="eyebrow">Service notice</p>
-      <h1>Temporarily unavailable</h1>
-      <p class="muted">The tender portal could not serve this request. Please retry later.</p>
-    </header></main>`,
+        <p class="eyebrow">Service notice</p>
+        <h1>Temporarily unavailable</h1>
+        <p class="muted">The football portal could not serve this request. Please retry later.</p>
+      </header></main>`,
   );
 }
 
@@ -181,13 +276,13 @@ function renderControlPage(mode: ChaosMode): string {
       </form>`,
     )
     .join("\n");
-  return documentShell(
+  return pageShell(
     "Chaos source controls",
     `<main><header>
-      <p class="eyebrow">Development controls</p>
-      <h1>Source layout state</h1>
-      <p class="muted">The public scraper target remains <code>/tenders</code>. This route is for local demonstrations only.</p>
-    </header><div class="control-list">${controls}</div></main>`,
+        <p class="eyebrow">Development controls</p>
+        <h1>Source layout state</h1>
+        <p class="muted">The public scraper target remains <code>/players</code>. This control route is for local demonstrations only.</p>
+      </header><div class="control-list">${controls}</div></main>`,
   );
 }
 
@@ -243,19 +338,19 @@ export function createChaosServer(initialMode: ChaosMode = "baseline-table") {
         return;
       }
 
-      if (request.method === "GET" && url.pathname === "/tenders") {
+      if (request.method === "GET" && url.pathname === "/players") {
         if (mode === "unavailable") {
           sendHtml(response, 503, renderUnavailablePage());
           return;
         }
-        sendHtml(response, 200, renderTenderPage(mode));
+        sendHtml(response, 200, renderCardsOrTablePage(mode));
         return;
       }
 
       if (
         request.method === "GET" &&
-        (url.pathname === "/fixtures/tenders" ||
-          url.pathname === "/tenders.json")
+        (url.pathname === "/fixtures/records" ||
+          url.pathname === "/records.json")
       ) {
         const requestedMode = url.searchParams.get("mode") ?? mode;
         if (!isChaosMode(requestedMode)) {
@@ -292,7 +387,7 @@ export function createChaosServer(initialMode: ChaosMode = "baseline-table") {
         }
         mode = nextMode;
         if ((request.headers.accept ?? "").includes("application/json")) {
-          sendJson(response, 200, { mode, publicTarget: "/tenders" });
+          sendJson(response, 200, { mode, publicTarget: "/players" });
           return;
         }
         response.writeHead(303, {
@@ -310,9 +405,9 @@ export function createChaosServer(initialMode: ChaosMode = "baseline-table") {
 
       if (
         url.pathname === "/health" ||
-        url.pathname === "/tenders" ||
-        url.pathname === "/fixtures/tenders" ||
-        url.pathname === "/tenders.json"
+        url.pathname === "/players" ||
+        url.pathname === "/fixtures/records" ||
+        url.pathname === "/records.json"
       ) {
         sendMethodNotAllowed(response, ["GET"]);
         return;
@@ -328,6 +423,12 @@ export function createChaosServer(initialMode: ChaosMode = "baseline-table") {
   });
 }
 
+function renderCardsOrTablePage(mode: AvailableChaosMode): string {
+  return mode === "baseline-table"
+    ? renderTablePage(mode)
+    : renderCardsPage(mode);
+}
+
 if (process.env.NODE_ENV !== "test") {
   const parsedPort = Number.parseInt(process.env.PORT ?? "4311", 10);
   const port = Number.isFinite(parsedPort) ? parsedPort : 4311;
@@ -335,6 +436,6 @@ if (process.env.NODE_ENV !== "test") {
   const server = createChaosServer();
 
   server.listen(port, host, () => {
-    console.log(`BidSentinel chaos source listening on http://${host}:${port}`);
+    console.log(`CardPulse chaos source listening on http://${host}:${port}`);
   });
 }

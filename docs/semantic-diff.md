@@ -1,60 +1,62 @@
-# Snapshot validation and semantic diff rules
+# Football snapshot and semantic diff rules
 
-`diffTenderSnapshots` is a pure, deterministic function. It accepts:
-
-- a previous `TenderSnapshot` or `null`;
-- a current `TenderSnapshot` or `null` when the tender was absent; and
-- `SnapshotSourceHealth` metadata for the two collection results.
-
-It returns a decision, the last verified snapshot, and one or more evidence-backed
-events. It performs no network calls and uses no probabilistic or LLM behavior.
+`diffFootballSnapshots` is a pure deterministic function. It accepts a
+previous `FootballSnapshot` or `null`, a current snapshot or `null`, and
+`SnapshotSourceHealth`. It performs no network or LLM calls.
 
 ## Decisions
 
-| Decision          | Meaning                                                                        |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `accept_current`  | The current snapshot is structurally and operationally trusted.                |
-| `retain_previous` | The current input is invalid, absent but unconfirmed, or there is no snapshot. |
-| `mark_removed`    | A healthy non-empty source confirmed the tender's absence twice.               |
+| Decision          | Meaning                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `accept_current`  | current snapshot is structurally and operationally trusted         |
+| `retain_previous` | input is invalid, unhealthy, suspicious, or absence is unconfirmed |
+| `mark_removed`    | a healthy non-empty source confirmed entity absence twice          |
 
-An `invalid_snapshot` event is only valid with `retain_previous`. The result
-contract enforces that invariant, and the engine returns the previous verified
-snapshot unchanged.
+An `invalid_snapshot` event can only accompany `retain_previous`; the result
+schema enforces that invariant.
 
-## Validation order
+## Safety order
 
-1. Parse snapshots and source-health metadata with strict Zod schemas.
-2. Reject duplicate document or corrigendum IDs and URLs.
-3. Reject unhealthy source states and source/tender identity mismatches.
-4. Reject non-monotonic versions and observation-time regressions.
-5. Reject temporary empty results and suspicious record-count collapse.
-6. Reject removal or mutation of a previously verified corrigendum.
-7. Compare deadline instants, status values, and newly added corrigendum IDs.
+1. Parse previous/current snapshots and source health with strict contracts.
+2. Reject unhealthy source state, identity mismatch, chronology regression,
+   and non-monotonic versions.
+3. Reject suspicious record-count collapse and temporary empty results.
+4. Require two healthy absence confirmations before removal.
+5. Compare canonical scalar fields for player, team, or standing records.
 
-## Fixed default thresholds
+Default count policy:
 
-- A record-count collapse check starts when the previous result had at least 10
-  records.
-- A drop greater than 50% is `invalid_snapshot`.
-- A zero-record result after a non-zero result is `invalid_snapshot`, not
-  `tender_removed`.
-- `tender_removed` requires two consecutive tender absences, a healthy source,
-  a non-empty current result, and no record-count collapse.
+- collapse checks begin at 10 previous records;
+- a drop greater than 50% retains the previous snapshot;
+- zero after non-zero is invalid, not removal;
+- removal requires two consecutive absences and a healthy non-empty batch.
 
-Deadline comparison uses epoch milliseconds. Two ISO timestamps that represent
-the same instant do not emit `deadline_changed`, even if their offsets differ.
+## Event vocabulary
 
-## Events
+The semantic engine emits `new_record`, `field_changed`, `entity_removed`,
+`no_change`, or `invalid_snapshot`, each with `semantic-diff-v1` evidence.
 
-The engine emits exactly the supported event vocabulary:
+The product-facing change detector groups accepted scalar changes into:
 
-- `new_tender`
-- `deadline_changed`
-- `status_changed`
-- `corrigendum_added`
-- `tender_removed`
-- `no_change`
-- `invalid_snapshot`
+- player goals, assists, appearances, minutes, discipline, and profile;
+- team profile changes;
+- standing rank, points, played/won/drawn/lost, goals for/against, and team
+  label changes.
 
-Every event contains `semantic-diff-v1` evidence with the rule, source,
-observation time, previous/current snapshot IDs, and rule-specific facts.
+Every accepted material state has a stable payload hash. Re-observing identical
+business data does not create another snapshot merely because `observedAt`
+changed.
+
+## Batch drift is separate from semantic change
+
+The pipeline only requests healing when layout drift is confirmed:
+
+- a verified batch collapses below its safety threshold;
+- a structural majority of rows fails after a baseline; or
+- before any baseline, the same majority structural signature repeats across
+  two runs.
+
+A first-ever empty batch and a minority malformed row are never sufficient.
+They are either ignored as no baseline evidence or quarantined as row noise.
+This keeps self-healing useful without making one malformed football value a
+billable scraper mutation.

@@ -4,7 +4,7 @@ import {
   ExternalCollectionNotConfiguredError,
   UnconfiguredBrightDataProvider,
   BrightDataCollectionProvider,
-  mapRawRowToTender,
+  mapRawRowToFootballRecord,
   BrightDataHealingProvider,
   UnconfiguredBrightDataHealingProvider,
 } from "./index.js";
@@ -16,8 +16,8 @@ describe("UnconfiguredBrightDataProvider", () => {
 
     await expect(
       provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       }),
     ).rejects.toBeInstanceOf(ExternalCollectionNotConfiguredError);
@@ -35,7 +35,9 @@ describe("BrightDataCollectionProvider", () => {
       if (url.includes("/dca/trigger")) {
         expect(options?.method).toBe("POST");
         expect(url).toContain("queue_next=1");
-        expect(options?.body).toContain("https://example.gov.test/tenders");
+        expect(options?.body).toContain(
+          "https://example.football.test/players",
+        );
         return Promise.resolve(
           new Response(JSON.stringify({ collection_id: "j_success_123" }), {
             status: 200,
@@ -59,11 +61,11 @@ describe("BrightDataCollectionProvider", () => {
           new Response(
             JSON.stringify([
               {
-                id: "2026-rail-signalling-001",
-                title: "Signalling Equipment",
-                url: "https://example.gov.test/tenders/001",
-                status: "open",
-                buyer_name: "National Rail",
+                id: "2026-player-001",
+                playerName: "Max Example",
+                url: "https://example.football.test/players/001",
+                position: "midfielder",
+                teamName: "FC Example",
               },
             ]),
             { status: 200 },
@@ -84,21 +86,22 @@ describe("BrightDataCollectionProvider", () => {
     });
 
     const result = await provider.collect({
-      sourceId: "gem",
-      targetUrl: "https://example.gov.test/tenders",
+      sourceId: "openligadb",
+      targetUrl: "https://example.football.test/players",
       requestedAt: "2026-08-20T05:00:00.000Z",
     });
 
-    expect(result.sourceId).toBe("gem");
+    expect(result.sourceId).toBe("openligadb");
     expect(result.collectorId).toBe("c_test_123");
     expect(result.extractorVersion).toBe("brightdata-c_test_123");
     expect(result.payloads).toHaveLength(1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mapped = result.payloads[0] as any;
-    expect(mapped.externalId).toBe("2026-rail-signalling-001");
-    expect(mapped.tenderId).toBe("gem:2026-rail-signalling-001");
-    expect(mapped.title).toBe("Signalling Equipment");
-    expect(mapped.buyer.name).toBe("National Rail");
+    expect(mapped.entityType).toBe("player");
+    expect(mapped.externalId).toBe("2026-player-001");
+    expect(mapped.playerId).toBe("openligadb:2026-player-001");
+    expect(mapped.playerName).toBe("Max Example");
+    expect(mapped.team.name).toBe("FC Example");
     expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
@@ -122,8 +125,8 @@ describe("BrightDataCollectionProvider", () => {
 
     await expect(
       provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       }),
     ).rejects.toMatchObject({
@@ -155,8 +158,8 @@ describe("BrightDataCollectionProvider", () => {
     let caught: unknown;
     try {
       await provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       });
     } catch (error) {
@@ -195,8 +198,8 @@ describe("BrightDataCollectionProvider", () => {
 
     await expect(
       provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       }),
     ).rejects.toMatchObject({ code: "timeout", transient: true });
@@ -246,8 +249,8 @@ describe("BrightDataCollectionProvider", () => {
     });
 
     const result = await provider.collect({
-      sourceId: "gem",
-      targetUrl: "https://example.gov.test/tenders",
+      sourceId: "openligadb",
+      targetUrl: "https://example.football.test/players",
       requestedAt: "2026-08-20T05:00:00.000Z",
     });
 
@@ -283,8 +286,8 @@ describe("BrightDataCollectionProvider", () => {
 
     await expect(
       provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       }),
     ).rejects.toMatchObject({ code: "malformed_response" });
@@ -306,8 +309,8 @@ describe("BrightDataCollectionProvider", () => {
 
     await expect(
       provider.collect({
-        sourceId: "gem",
-        targetUrl: "https://example.gov.test/tenders",
+        sourceId: "openligadb",
+        targetUrl: "https://example.football.test/players",
         requestedAt: "2026-08-20T05:00:00.000Z",
       }),
     ).rejects.toMatchObject({ code: "malformed_response" });
@@ -318,43 +321,114 @@ describe("BrightDataCollectionProvider", () => {
     const observedAt = "2026-08-20T05:00:00.000Z";
     const validRow = {
       id: "valid-id",
-      title: "Valid Title",
-      url: "https://example.gov.test/tenders/valid",
-      status: "open",
-      buyer: { name: "Buyer Name", country: "IN" },
+      playerName: "Max Example",
+      position: "midfielder",
+      season: "2025",
+      team: { teamId: "team-1", name: "FC Example" },
+      url: "https://example.football.test/players/valid",
+      stats: { appearances: 10, goals: 3, yellowCards: 1 },
     };
     const invalidRow = {
       id: "invalid-id",
       url: "not-a-url",
-      status: "invalid-status",
+      position: "midfielder",
     };
 
-    type MappedTender = {
-      tenderId?: unknown;
-      title?: unknown;
-      url?: unknown;
-      buyer?: { name?: unknown; countryCode?: unknown };
+    type MappedRecord = {
+      entityType?: unknown;
+      playerId?: unknown;
+      playerName?: unknown;
+      sourceUrl?: unknown;
+      stats?: Record<string, unknown>;
+      team?: { name?: unknown; teamId?: unknown };
+      shirtNumber?: unknown;
+      nationality?: unknown;
     };
-    const mappedValid = mapRawRowToTender(
+    const mappedValid = mapRawRowToFootballRecord(
       validRow,
-      "gem",
+      "openligadb",
       observedAt,
-    ) as MappedTender;
-    const mappedInvalid = mapRawRowToTender(
+    ) as MappedRecord;
+    const mappedInvalid = mapRawRowToFootballRecord(
       invalidRow,
-      "gem",
+      "openligadb",
       observedAt,
-    ) as MappedTender;
+    ) as MappedRecord;
 
-    expect(mappedValid.tenderId).toBe("gem:valid-id");
-    expect(mappedValid.title).toBe("Valid Title");
-    expect(mappedValid.buyer?.name).toBe("Buyer Name");
-    expect(mappedValid.buyer?.countryCode).toBe("IN");
+    expect(mappedValid.entityType).toBe("player");
+    expect(mappedValid.playerId).toBe("openligadb:valid-id");
+    expect(mappedValid.playerName).toBe("Max Example");
+    expect(mappedValid.team?.name).toBe("FC Example");
+    expect(mappedValid.stats?.["yellowCards"]).toBe(1);
 
-    expect(mappedInvalid.tenderId).toBe("gem:invalid-id");
-    expect(mappedInvalid.title).toBeUndefined();
-    expect(mappedInvalid.url).toBe("not-a-url");
-    expect(mappedInvalid.buyer).toBeUndefined();
+    expect(mappedInvalid.entityType).toBe("player");
+    expect(mappedInvalid.playerId).toBe("openligadb:invalid-id");
+    expect(mappedInvalid.playerName).toBeUndefined();
+    expect(mappedInvalid.sourceUrl).toBe("not-a-url");
+    expect(mappedInvalid.shirtNumber).toBeNull();
+    expect(mappedInvalid.nationality).toBeNull();
+  });
+
+  it("maps explicit standing rows without inventing arithmetic data", () => {
+    const observedAt = "2026-08-20T05:00:00.000Z";
+    const row = {
+      entityType: "standing",
+      id: "bundesliga-2025-bayern",
+      competition: "Bundesliga",
+      season: "2025",
+      teamId: "bayern",
+      teamName: "Bayern München",
+      rank: "2",
+      played: 34,
+      won: 25,
+      drawn: 5,
+      lost: 4,
+      goalsFor: 92,
+      goalsAgainst: 32,
+      points: "80",
+      url: "https://example.football.test/standings/bayern",
+    };
+
+    type MappedStanding = {
+      entityType?: unknown;
+      rank?: unknown;
+      points?: unknown;
+      goalsAgainst?: unknown;
+      season?: unknown;
+    };
+    const mapped = mapRawRowToFootballRecord(
+      row,
+      "openligadb",
+      observedAt,
+    ) as MappedStanding;
+
+    expect(mapped.entityType).toBe("standing");
+    expect(mapped.rank).toBe(2);
+    expect(mapped.points).toBe(80);
+    expect(mapped.goalsAgainst).toBe(32);
+    expect(mapped.season).toBe("2025");
+
+    const playerRow = {
+      ...row,
+      entityType: undefined,
+      rank: undefined,
+      points: undefined,
+      played: undefined,
+      won: undefined,
+      drawn: undefined,
+      lost: undefined,
+      goalsFor: undefined,
+      goalsAgainst: undefined,
+      playerName: "Inferred Player",
+      position: "forward",
+    };
+    const inferred = mapRawRowToFootballRecord(
+      playerRow,
+      "openligadb",
+      observedAt,
+    ) as MappedStanding & { position?: unknown };
+    expect(inferred.entityType).toBe("player");
+    expect(inferred.position).toBe("forward");
   });
 });
 
@@ -395,7 +469,7 @@ describe("BrightDataHealingProvider", () => {
             JSON.stringify({
               status: "pending_answer",
               step: "review",
-              preview_result: [{ title: "Recovered tender" }],
+              preview_result: [{ playerName: "Recovered Player" }],
             }),
             { status: 200 },
           ),
@@ -414,7 +488,7 @@ describe("BrightDataHealingProvider", () => {
     expect(progress).toEqual({
       status: "pending_answer",
       step: "review",
-      previewResult: [{ title: "Recovered tender" }],
+      previewResult: [{ playerName: "Recovered Player" }],
     });
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });

@@ -1,52 +1,75 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FootballSnapshotSchema,
   SnapshotSourceHealthSchema,
-  TenderSnapshotSchema,
+  type FootballRecord,
+  type FootballSnapshot,
   type SnapshotSourceHealth,
-  type Tender,
-  type TenderSnapshot,
 } from "@bidsentinel/contracts";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import {
+  amendedPlayerFixture,
+  validPlayerFixture,
+  validStandingFixtures,
+} from "@bidsentinel/contracts/fixtures";
 
-import { diffTenderSnapshots } from "./semantic-diff.js";
+import { diffFootballSnapshots } from "./semantic-diff.js";
 
 interface SnapshotOptions {
   version?: number;
   observedAt?: string;
-  deadline?: string | null;
-  status?: Tender["status"];
-  documents?: Tender["documents"];
-  corrigenda?: Tender["corrigenda"];
+  goals?: number;
+  rank?: number;
 }
 
-function makeSnapshot(options: SnapshotOptions = {}): TenderSnapshot {
+function makePlayerSnapshot(options: SnapshotOptions = {}): FootballSnapshot {
   const version = options.version ?? 1;
   const observedAt =
     options.observedAt ??
-    (version === 1 ? "2026-08-20T05:00:00.000Z" : "2026-08-21T05:00:00.000Z");
+    (version === 1 ? "2026-08-20T14:00:00.000Z" : "2026-08-21T14:00:00.000Z");
   const suffix = String(version).padStart(12, "0");
-  const tender: Tender = {
-    ...validTenderFixture,
-    status: options.status ?? validTenderFixture.status,
-    submissionDeadline:
-      options.deadline === undefined
-        ? validTenderFixture.submissionDeadline
-        : options.deadline,
-    documents: options.documents ?? validTenderFixture.documents,
-    corrigenda: options.corrigenda ?? validTenderFixture.corrigenda,
+  const record: FootballRecord = {
+    ...validPlayerFixture,
+    stats: {
+      ...validPlayerFixture.stats,
+      goals: options.goals ?? validPlayerFixture.stats.goals,
+    },
     observedAt,
   };
 
-  return TenderSnapshotSchema.parse({
+  return FootballSnapshotSchema.parse({
     schemaVersion: 1,
     snapshotId: `00000000-0000-4000-8000-${suffix}`,
-    tenderId: tender.tenderId,
-    sourceId: tender.sourceId,
+    entityId: record.playerId,
+    entityType: record.entityType,
+    sourceId: record.sourceId,
     version,
     observedAt,
     payloadHash: (version % 10).toString().repeat(64),
-    tender,
+    record,
+  });
+}
+
+function makeStandingSnapshot(options: SnapshotOptions = {}): FootballSnapshot {
+  const version = options.version ?? 1;
+  const suffix = String(version + 100).padStart(12, "0");
+  const base = validStandingFixtures[0];
+  if (!base) throw new Error("Standing fixture missing");
+  const record: FootballRecord = {
+    ...base,
+    rank: options.rank ?? base.rank,
+  };
+
+  return FootballSnapshotSchema.parse({
+    schemaVersion: 1,
+    snapshotId: `00000000-0000-4000-8000-${suffix}`,
+    entityId: `${record.competition}:${record.season}:${record.teamId}`,
+    entityType: record.entityType,
+    sourceId: record.sourceId,
+    version,
+    observedAt: "2026-08-21T14:00:00.000Z",
+    payloadHash: (version % 10).toString().repeat(64),
+    record,
   });
 }
 
@@ -55,25 +78,25 @@ function makeHealth(
 ): SnapshotSourceHealth {
   return SnapshotSourceHealthSchema.parse({
     schemaVersion: 1,
-    sourceId: "gem",
+    sourceId: "openligadb",
     state: "healthy",
-    checkedAt: "2026-08-21T05:00:00.000Z",
+    checkedAt: "2026-08-21T14:00:00.000Z",
     previousRecordCount: 100,
     currentRecordCount: 100,
     consecutiveEmptyResults: 0,
-    consecutiveTenderAbsences: 0,
+    consecutiveAbsences: 0,
     ...overrides,
   });
 }
 
-function kinds(result: ReturnType<typeof diffTenderSnapshots>): string[] {
+function kinds(result: ReturnType<typeof diffFootballSnapshots>): string[] {
   return result.events.map((event) => event.kind);
 }
 
-describe("diffTenderSnapshots", () => {
-  it("emits new_tender for the first verified snapshot", () => {
-    const current = makeSnapshot();
-    const result = diffTenderSnapshots({
+describe("diffFootballSnapshots", () => {
+  it("emits new_record for the first verified snapshot", () => {
+    const current = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous: null,
       current,
       sourceHealth: makeHealth({
@@ -82,156 +105,71 @@ describe("diffTenderSnapshots", () => {
       }),
     });
 
-    expect(kinds(result)).toEqual(["new_tender"]);
+    expect(kinds(result)).toEqual(["new_record"]);
     expect(result.decision).toBe("accept_current");
     expect(result.lastVerifiedSnapshot?.snapshotId).toBe(current.snapshotId);
   });
 
-  it("treats two null deadlines as no_change", () => {
-    const previous = makeSnapshot({ deadline: null });
-    const current = makeSnapshot({ version: 2, deadline: null });
-    const result = diffTenderSnapshots({
+  it("treats identical restatements as semantic_state_unchanged", () => {
+    const previous = makePlayerSnapshot();
+    const current = makePlayerSnapshot({ version: 2 });
+    const result = diffFootballSnapshots({
       previous,
       current,
       sourceHealth: makeHealth(),
     });
 
     expect(kinds(result)).toEqual(["no_change"]);
+    expect(result.decision).toBe("accept_current");
     expect(result.lastVerifiedSnapshot?.snapshotId).toBe(current.snapshotId);
   });
 
-  it.each([
-    {
-      name: "null to a date",
-      before: null,
-      after: "2026-09-15T12:00:00.000Z",
-    },
-    {
-      name: "one date to another",
-      before: "2026-09-15T12:00:00.000Z",
-      after: "2026-09-16T12:00:00.000Z",
-    },
-    {
-      name: "a date to null",
-      before: "2026-09-15T12:00:00.000Z",
-      after: null,
-    },
-  ])("emits deadline_changed for $name", ({ before, after }) => {
-    const result = diffTenderSnapshots({
-      previous: makeSnapshot({ deadline: before }),
-      current: makeSnapshot({ version: 2, deadline: after }),
+  it("emits field_changed with before/after evidence when a stat moves", () => {
+    const amendedGoals = amendedPlayerFixture.stats.goals;
+    const result = diffFootballSnapshots({
+      previous: makePlayerSnapshot(),
+      current: makePlayerSnapshot({ version: 2, goals: amendedGoals }),
       sourceHealth: makeHealth(),
     });
 
-    expect(kinds(result)).toEqual(["deadline_changed"]);
+    expect(kinds(result)).toEqual(["field_changed"]);
     expect(result.events[0]).toMatchObject({
-      before,
-      after,
-      evidence: { rule: "deadline_instant_changed" },
-    });
-  });
-
-  it("compares deadline instants rather than timezone formatting", () => {
-    const result = diffTenderSnapshots({
-      previous: makeSnapshot({
-        deadline: "2026-09-15T12:00:00.000Z",
-      }),
-      current: makeSnapshot({
-        version: 2,
-        deadline: "2026-09-15T17:30:00.000+05:30",
-      }),
-      sourceHealth: makeHealth(),
-    });
-
-    expect(kinds(result)).toEqual(["no_change"]);
-  });
-
-  it("emits status_changed with before/after evidence", () => {
-    const result = diffTenderSnapshots({
-      previous: makeSnapshot({ status: "open" }),
-      current: makeSnapshot({ version: 2, status: "closed" }),
-      sourceHealth: makeHealth(),
-    });
-
-    expect(result.events).toEqual([
-      expect.objectContaining({
-        kind: "status_changed",
-        before: "open",
-        after: "closed",
-        evidence: expect.objectContaining({
-          rule: "status_value_changed",
-          facts: { beforeStatus: "open", afterStatus: "closed" },
+      kind: "field_changed",
+      field: "stats.goals",
+      before: validPlayerFixture.stats.goals,
+      after: amendedGoals,
+      evidence: expect.objectContaining({
+        rule: "field_value_changed",
+        facts: expect.objectContaining({
+          field: "stats.goals",
+          beforeValue: validPlayerFixture.stats.goals,
+          afterValue: amendedGoals,
         }),
       }),
-    ]);
+    });
   });
 
-  it("emits one corrigendum_added event for each new reference", () => {
-    const corrigendum: Tender["corrigenda"][number] = {
-      id: "corrigendum-1",
-      title: "Submission deadline extension",
-      description: "The submission deadline is extended.",
-      publishedAt: "2026-08-21T03:30:00.000Z",
-      url: "https://example.gov.test/corrigenda/1",
-    };
-    const result = diffTenderSnapshots({
-      previous: makeSnapshot(),
-      current: makeSnapshot({ version: 2, corrigenda: [corrigendum] }),
+  it("emits a standing change when the table position moves", () => {
+    const result = diffFootballSnapshots({
+      previous: makeStandingSnapshot({ version: 1 }),
+      current: makeStandingSnapshot({ version: 2, rank: 2 }),
       sourceHealth: makeHealth(),
     });
 
-    expect(kinds(result)).toEqual(["corrigendum_added"]);
+    expect(kinds(result)).toEqual(["field_changed"]);
     expect(result.events[0]).toMatchObject({
-      corrigendum,
-      evidence: {
-        rule: "new_corrigendum_reference",
-        facts: {
-          corrigendumId: "corrigendum-1",
-          publishedAt: "2026-08-21T03:30:00.000Z",
-        },
-      },
+      kind: "field_changed",
+      field: "rank",
+      before: 1,
+      after: 2,
     });
-  });
-
-  it("rejects duplicate document references without replacing the baseline", () => {
-    const previous = makeSnapshot();
-    const baseDocument = validTenderFixture.documents[0];
-    if (baseDocument === undefined) {
-      throw new Error("Fixture must include a document");
-    }
-    const duplicateDocuments: Tender["documents"] = [
-      baseDocument,
-      { ...baseDocument },
-    ];
-    const current = makeSnapshot({
-      version: 2,
-      documents: duplicateDocuments,
-    });
-    const result = diffTenderSnapshots({
-      previous,
-      current,
-      sourceHealth: makeHealth(),
-    });
-
-    expect(kinds(result)).toEqual(["invalid_snapshot"]);
-    expect(result.decision).toBe("retain_previous");
-    expect(result.lastVerifiedSnapshot?.snapshotId).toBe(previous.snapshotId);
-    const event = result.events[0];
-    expect(event?.kind).toBe("invalid_snapshot");
-    if (event?.kind === "invalid_snapshot") {
-      expect(
-        event.issues.some((issue) => issue.code === "duplicate_reference"),
-      ).toBe(true);
-      expect(event.evidence.rule).toBe("snapshot_rejected");
-    }
   });
 
   it("rejects a record-count collapse without replacing the baseline", () => {
-    const previous = makeSnapshot();
-    const current = makeSnapshot({ version: 2, status: "closed" });
-    const result = diffTenderSnapshots({
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous,
-      current,
+      current: makePlayerSnapshot({ version: 2, goals: 19 }),
       sourceHealth: makeHealth({
         previousRecordCount: 200,
         currentRecordCount: 20,
@@ -251,15 +189,15 @@ describe("diffTenderSnapshots", () => {
     });
   });
 
-  it("rejects a temporary empty result instead of removing the tender", () => {
-    const previous = makeSnapshot();
-    const result = diffTenderSnapshots({
+  it("rejects a temporary empty result instead of removing the card", () => {
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous,
       current: null,
       sourceHealth: makeHealth({
         currentRecordCount: 0,
         consecutiveEmptyResults: 1,
-        consecutiveTenderAbsences: 1,
+        consecutiveAbsences: 1,
       }),
     });
 
@@ -267,21 +205,14 @@ describe("diffTenderSnapshots", () => {
     expect(result.lastVerifiedSnapshot?.snapshotId).toBe(previous.snapshotId);
     expect(result.events[0]).toMatchObject({
       issues: [expect.objectContaining({ code: "temporary_empty_result" })],
-      evidence: {
-        facts: expect.objectContaining({
-          previousRecordCount: 100,
-          currentRecordCount: 0,
-          consecutiveEmptyResults: 1,
-        }),
-      },
     });
   });
 
   it("rejects snapshots from an unhealthy source", () => {
-    const previous = makeSnapshot();
-    const result = diffTenderSnapshots({
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous,
-      current: makeSnapshot({ version: 2, status: "closed" }),
+      current: makePlayerSnapshot({ version: 2, goals: 19 }),
       sourceHealth: makeHealth({ state: "degraded" }),
     });
 
@@ -292,18 +223,38 @@ describe("diffTenderSnapshots", () => {
     });
   });
 
-  it("emits tender_removed only after confirmed absence on a healthy result", () => {
-    const previous = makeSnapshot();
-    const result = diffTenderSnapshots({
+  it("rejects time-regressed snapshots without replacing the verified card", () => {
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
+      previous,
+      current: makePlayerSnapshot({
+        version: 2,
+        goals: 19,
+        observedAt: "2026-08-19T14:00:00.000Z",
+      }),
+      sourceHealth: makeHealth(),
+    });
+
+    expect(kinds(result)).toEqual(["invalid_snapshot"]);
+    expect(result.decision).toBe("retain_previous");
+    expect(result.events[0]).toMatchObject({
+      issues: [expect.objectContaining({ code: "snapshot_time_regression" })],
+      evidence: { rule: "snapshot_rejected" },
+    });
+  });
+
+  it("emits entity_removed only after confirmed absence on a healthy result", () => {
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous,
       current: null,
       sourceHealth: makeHealth({
         currentRecordCount: 99,
-        consecutiveTenderAbsences: 2,
+        consecutiveAbsences: 2,
       }),
     });
 
-    expect(kinds(result)).toEqual(["tender_removed"]);
+    expect(kinds(result)).toEqual(["entity_removed"]);
     expect(result.decision).toBe("mark_removed");
     expect(result.lastVerifiedSnapshot?.snapshotId).toBe(previous.snapshotId);
     expect(result.events[0]?.evidence.facts).toMatchObject({
@@ -312,53 +263,19 @@ describe("diffTenderSnapshots", () => {
     });
   });
 
-  it("retains the baseline while a non-empty absence is unconfirmed", () => {
-    const previous = makeSnapshot();
-    const result = diffTenderSnapshots({
+  it("retains the card while a non-empty absence is unconfirmed", () => {
+    const previous = makePlayerSnapshot();
+    const result = diffFootballSnapshots({
       previous,
       current: null,
       sourceHealth: makeHealth({
         currentRecordCount: 99,
-        consecutiveTenderAbsences: 1,
+        consecutiveAbsences: 1,
       }),
     });
 
     expect(kinds(result)).toEqual(["no_change"]);
     expect(result.decision).toBe("retain_previous");
     expect(result.lastVerifiedSnapshot?.snapshotId).toBe(previous.snapshotId);
-  });
-
-  it("attaches evidence to every event in a multi-change result", () => {
-    const corrigendum: Tender["corrigenda"][number] = {
-      id: "corrigendum-1",
-      title: "Revised terms",
-      description: null,
-      publishedAt: "2026-08-21T03:30:00.000Z",
-      url: null,
-    };
-    const result = diffTenderSnapshots({
-      previous: makeSnapshot(),
-      current: makeSnapshot({
-        version: 2,
-        deadline: "2026-09-20T12:00:00.000Z",
-        status: "closed",
-        corrigenda: [corrigendum],
-      }),
-      sourceHealth: makeHealth(),
-    });
-
-    expect(kinds(result)).toEqual([
-      "deadline_changed",
-      "status_changed",
-      "corrigendum_added",
-    ]);
-    expect(
-      result.events.every(
-        (event) =>
-          event.evidence.engineVersion === "semantic-diff-v1" &&
-          event.evidence.previousSnapshotId !== null &&
-          event.evidence.currentSnapshotId !== null,
-      ),
-    ).toBe(true);
   });
 });

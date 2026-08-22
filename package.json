@@ -1,8 +1,8 @@
 {
-  "name": "bidsentinel",
+  "name": "cardpulse-football",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first tender change monitoring MVP",
+  "description": "Self-healing public-web football data monitoring MVP",
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "engines": {

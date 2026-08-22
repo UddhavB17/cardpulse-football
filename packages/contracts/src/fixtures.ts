@@ -2,82 +2,273 @@ import type {
   ApiErrorResponse,
   ApiHealthResponse,
   ChangeEventListResponse,
+  FootballChangeEvent,
+  FootballRecord,
+  FootballSnapshot,
   Pagination,
-  QuarantinedExtraction,
+  PlayerCard,
+  PlayerDetail,
+  PlayerDetailResponse,
+  PlayerListResponse,
+  PlayerSummary,
   QuarantineListResponse,
+  QuarantinedExtraction,
   RecoveryEvidence,
   RecoveryEvidenceResponse,
   SourceHealth,
   SourceHealthListResponse,
-  Tender,
-  TenderChangeEvent,
-  TenderDetail,
-  TenderDetailResponse,
-  TenderListResponse,
-  TenderSnapshot,
-  TenderSummary,
+  StandingsListResponse,
+  StandingEntry,
+  TeamDetailResponse,
+  TeamListResponse,
+  TeamSummaryRecord,
 } from "./index.js";
 
-export const validTenderFixture = {
-  schemaVersion: 1,
-  tenderId: "gem:2026-rail-signalling-001",
-  sourceId: "gem",
-  externalId: "2026-rail-signalling-001",
-  title: "Supply and maintenance of railway signalling equipment",
-  description: "A public tender for signalling equipment and support.",
-  buyer: {
-    name: "National Rail Infrastructure Authority",
-    countryCode: "IN",
-  },
-  status: "open",
-  publishedAt: "2026-08-18T04:30:00.000Z",
-  submissionDeadline: "2026-09-15T12:00:00.000Z",
-  url: "https://example.gov.test/tenders/2026-rail-signalling-001",
-  estimatedValue: {
-    amount: 125_000_000,
-    currency: "INR",
-  },
-  documents: [
-    {
-      id: "notice-v1",
-      title: "Tender notice",
-      url: "https://example.gov.test/documents/notice-v1.pdf",
-      publishedAt: "2026-08-18T04:30:00.000Z",
-    },
-  ],
-  corrigenda: [],
-  observedAt: "2026-08-20T05:00:00.000Z",
-} satisfies Tender;
+/**
+ * Deterministic OpenLigaDB-inspired demo data for CardPulse Football.
+ * Clubs, players, and URLs are fictional and clearly labelled demo data;
+ * no copyrighted crests or photos are used anywhere.
+ */
 
-export const tenderWithCorrigendumFixture = {
-  ...validTenderFixture,
-  submissionDeadline: "2026-09-22T12:00:00.000Z",
-  observedAt: "2026-08-21T05:00:00.000Z",
-  corrigenda: [
-    {
-      id: "corrigendum-1",
-      title: "Submission deadline extension",
-      description: "The submission deadline has been extended by seven days.",
-      publishedAt: "2026-08-21T03:30:00.000Z",
-      url: "https://example.gov.test/tenders/2026-rail-signalling-001/corrigenda/1",
+export const demoSourceId = "openligadb";
+export const demoCompetition = "bl1-demo";
+export const demoSeason = "2025";
+
+const baselineObservedAt = "2026-08-20T14:00:00.000Z";
+const amendedObservedAt = "2026-08-21T14:00:00.000Z";
+const sourceBase = "https://data.football-demo.test/openligadb";
+
+function playerUrl(externalId: string): string {
+  return `${sourceBase}/players/${externalId}`;
+}
+
+export const validPlayerFixtures: PlayerCard[] = [
+  {
+    schemaVersion: 1,
+    entityType: "player",
+    playerId: "openligadb:player:finn-krueger",
+    sourceId: demoSourceId,
+    externalId: "player-finn-krueger",
+    playerName: "Finn Krüger",
+    team: { teamId: "openligadb:rheinland-fc-04", name: "Rheinland FC 04" },
+    position: "forward",
+    shirtNumber: 11,
+    nationality: "Germany",
+    season: demoSeason,
+    stats: {
+      appearances: 33,
+      goals: 18,
+      assists: 5,
+      yellowCards: 3,
+      redCards: 0,
+      minutesPlayed: 2820,
     },
-  ],
-} satisfies Tender;
+    sourceUrl: playerUrl("player-finn-krueger"),
+    observedAt: baselineObservedAt,
+  },
+  {
+    schemaVersion: 1,
+    entityType: "player",
+    playerId: "openligadb:player:milan-horvat",
+    sourceId: demoSourceId,
+    externalId: "player-milan-horvat",
+    playerName: "Milan Horvat",
+    team: { teamId: "openligadb:adlersberg-03", name: "FC Adlersberg 03" },
+    position: "midfielder",
+    shirtNumber: 8,
+    nationality: "Croatia",
+    season: demoSeason,
+    stats: {
+      appearances: 32,
+      goals: 9,
+      assists: 12,
+      yellowCards: 5,
+      redCards: 0,
+      minutesPlayed: 2705,
+    },
+    sourceUrl: playerUrl("player-milan-horvat"),
+    observedAt: baselineObservedAt,
+  },
+  {
+    schemaVersion: 1,
+    entityType: "player",
+    playerId: "openligadb:player:jonas-brandt",
+    sourceId: demoSourceId,
+    externalId: "player-jonas-brandt",
+    playerName: "Jonas Brandt",
+    team: {
+      teamId: "openligadb:nordstern-nordhafen",
+      name: "SV Nordstern Nordhafen",
+    },
+    position: "forward",
+    shirtNumber: 10,
+    nationality: "Germany",
+    season: demoSeason,
+    stats: {
+      appearances: 31,
+      goals: 14,
+      assists: 7,
+      yellowCards: 2,
+      redCards: 0,
+      minutesPlayed: 2544,
+    },
+    sourceUrl: playerUrl("player-jonas-brandt"),
+    observedAt: baselineObservedAt,
+  },
+];
+
+/** The striker whose goal tally moves in the amended demo step. */
+export const trackedPlayerId =
+  validPlayerFixtures[0]?.playerId ?? "openligadb:player:finn-krueger";
+
+export const amendedPlayerFixture: PlayerCard = {
+  ...(validPlayerFixtures[0] as PlayerCard),
+  observedAt: amendedObservedAt,
+  stats: {
+    appearances: 34,
+    goals: 21,
+    assists: 5,
+    yellowCards: 3,
+    redCards: 0,
+    minutesPlayed: 2910,
+  },
+};
+
+export const validTeamFixtures: TeamSummaryRecord[] = [
+  {
+    schemaVersion: 1,
+    entityType: "team",
+    teamId: "openligadb:rheinland-fc-04",
+    sourceId: demoSourceId,
+    externalId: "rheinland-fc-04",
+    name: "Rheinland FC 04",
+    shortName: "Rheinland",
+    country: "DE",
+    city: "Rheinstadt",
+    stadium: "Stadion am Rheindamm",
+    founded: 1904,
+    coach: "M. Falkner",
+    sourceUrl: `${sourceBase}/teams/rheinland-fc-04`,
+    observedAt: baselineObservedAt,
+  },
+  {
+    schemaVersion: 1,
+    entityType: "team",
+    teamId: "openligadb:adlersberg-03",
+    sourceId: demoSourceId,
+    externalId: "adlersberg-03",
+    name: "FC Adlersberg 03",
+    shortName: "Adlersberg",
+    country: "DE",
+    city: "Adlersberg",
+    stadium: "Adlerpark",
+    founded: 1903,
+    coach: "S. Kovač",
+    sourceUrl: `${sourceBase}/teams/adlersberg-03`,
+    observedAt: baselineObservedAt,
+  },
+  {
+    schemaVersion: 1,
+    entityType: "team",
+    teamId: "openligadb:nordstern-nordhafen",
+    sourceId: demoSourceId,
+    externalId: "nordstern-nordhafen",
+    name: "SV Nordstern Nordhafen",
+    shortName: "Nordstern",
+    country: "DE",
+    city: "Nordhafen",
+    stadium: "Hafenring",
+    founded: 1899,
+    coach: "T. Brenner",
+    sourceUrl: `${sourceBase}/teams/nordstern-nordhafen`,
+    observedAt: baselineObservedAt,
+  },
+];
+
+function standing(
+  teamSlug: string,
+  teamName: string,
+  rank: number,
+  won: number,
+  drawn: number,
+  lost: number,
+  goalsFor: number,
+  goalsAgainst: number,
+  points: number,
+): StandingEntry {
+  return {
+    schemaVersion: 1,
+    entityType: "standing",
+    sourceId: demoSourceId,
+    externalId: `${demoCompetition}:${demoSeason}:${teamSlug}`,
+    competition: demoCompetition,
+    season: demoSeason,
+    teamId: `openligadb:${teamSlug}`,
+    teamName,
+    rank,
+    played: won + drawn + lost,
+    won,
+    drawn,
+    lost,
+    goalsFor,
+    goalsAgainst,
+    points,
+    sourceUrl: `${sourceBase}/tables/${demoCompetition}/${demoSeason}`,
+    observedAt: baselineObservedAt,
+  };
+}
+
+export const validStandingFixtures: StandingEntry[] = [
+  standing("rheinland-fc-04", "Rheinland FC 04", 1, 24, 7, 3, 71, 32, 79),
+  standing("adlersberg-03", "FC Adlersberg 03", 2, 22, 8, 4, 66, 35, 74),
+  standing(
+    "nordstern-nordhafen",
+    "SV Nordstern Nordhafen",
+    3,
+    19,
+    9,
+    6,
+    60,
+    38,
+    66,
+  ),
+];
+
+export const validPlayerFixture: PlayerCard = validPlayerFixtures[0]
+  ? structuredClone(validPlayerFixtures[0])
+  : ({} as PlayerCard);
+
+/** Full deterministic extraction batch used by the demo collection cycle. */
+export function demoRecordsFor(mode: "valid" | "amended"): FootballRecord[] {
+  if (mode === "amended") {
+    return [
+      amendedPlayerFixture,
+      ...validPlayerFixtures.slice(1),
+      ...validTeamFixtures,
+      ...validStandingFixtures,
+    ];
+  }
+  return [
+    ...validPlayerFixtures,
+    ...validTeamFixtures,
+    ...validStandingFixtures,
+  ];
+}
 
 export const validRecoveryEvidenceFixture = {
   schemaVersion: 1,
   recoveryEvidenceId: "a75cb389-875d-4d1a-9df3-8cc2ebd98f89",
   incidentId: "ec1ef7d9-f67c-45ab-b4a9-dfcf406564d2",
-  sourceId: "gem",
+  sourceId: demoSourceId,
   strategy: "next-poll-revalidation",
-  startedAt: "2026-08-20T05:05:00.000Z",
-  completedAt: "2026-08-20T05:10:00.000Z",
+  startedAt: "2026-08-21T14:05:00.000Z",
+  completedAt: "2026-08-21T14:10:00.000Z",
   outcome: "recovered",
   actions: ["Accepted a schema-valid payload on the next scheduled poll"],
   verification: {
-    validTenderCount: 1,
+    validRecordCount: 1,
     quarantinedCount: 1,
-    sampleTenderIds: [validTenderFixture.tenderId],
+    sampleEntityIds: [trackedPlayerId],
     payloadHashes: ["a".repeat(64)],
   },
 } satisfies RecoveryEvidence;
@@ -86,90 +277,86 @@ export const recoveryEvidenceFixture = validRecoveryEvidenceFixture;
 
 export const validSourceHealthFixture = {
   schemaVersion: 1,
-  sourceId: "gem",
+  sourceId: demoSourceId,
   state: "healthy",
-  checkedAt: "2026-08-20T05:10:00.000Z",
-  lastSuccessfulAt: "2026-08-20T05:10:00.000Z",
+  checkedAt: "2026-08-21T14:10:00.000Z",
+  lastSuccessfulAt: "2026-08-21T14:10:00.000Z",
   consecutiveFailures: 0,
   recentFailureRate: 0.1,
   activeIncident: null,
   latestRecoveryEvidence: validRecoveryEvidenceFixture,
 } satisfies SourceHealth;
 
-export const validTenderSnapshotFixture = {
+export const validPlayerSnapshotFixture = {
   schemaVersion: 1,
   snapshotId: "7b4b518c-24a6-423b-b083-5e53e46f9082",
-  tenderId: validTenderFixture.tenderId,
-  sourceId: validTenderFixture.sourceId,
+  entityId: validPlayerFixture.playerId,
+  entityType: "player",
+  sourceId: validPlayerFixture.sourceId,
   version: 1,
-  observedAt: validTenderFixture.observedAt,
+  observedAt: validPlayerFixture.observedAt,
   payloadHash: "b".repeat(64),
-  tender: validTenderFixture,
-} satisfies TenderSnapshot;
+  record: validPlayerFixture,
+} satisfies FootballSnapshot;
 
-export const validTenderSummaryFixture = {
+export const validPlayerSummaryFixture = {
   schemaVersion: 1,
-  tenderId: validTenderFixture.tenderId,
-  sourceId: validTenderFixture.sourceId,
-  externalId: validTenderFixture.externalId,
-  title: validTenderFixture.title,
-  buyer: validTenderFixture.buyer,
-  status: validTenderFixture.status,
-  publishedAt: validTenderFixture.publishedAt,
-  submissionDeadline: validTenderFixture.submissionDeadline,
-  url: validTenderFixture.url,
-  estimatedValue: validTenderFixture.estimatedValue,
-  observedAt: validTenderFixture.observedAt,
+  playerId: validPlayerFixture.playerId,
+  sourceId: validPlayerFixture.sourceId,
+  playerName: validPlayerFixture.playerName,
+  team: validPlayerFixture.team,
+  position: validPlayerFixture.position,
+  shirtNumber: validPlayerFixture.shirtNumber,
+  season: validPlayerFixture.season,
+  stats: validPlayerFixture.stats,
+  observedAt: validPlayerFixture.observedAt,
   latestSnapshot: {
-    snapshotId: validTenderSnapshotFixture.snapshotId,
-    version: validTenderSnapshotFixture.version,
+    snapshotId: validPlayerSnapshotFixture.snapshotId,
+    version: validPlayerSnapshotFixture.version,
   },
-  documentCount: validTenderFixture.documents.length,
-  corrigendumCount: validTenderFixture.corrigenda.length,
-} satisfies TenderSummary;
+} satisfies PlayerSummary;
 
-export const validTenderDetailFixture = {
-  ...validTenderFixture,
+export const validPlayerDetailFixture = {
+  ...validPlayerFixture,
   latestSnapshot: {
-    snapshotId: validTenderSnapshotFixture.snapshotId,
-    version: validTenderSnapshotFixture.version,
-    payloadHash: validTenderSnapshotFixture.payloadHash,
+    snapshotId: validPlayerSnapshotFixture.snapshotId,
+    version: validPlayerSnapshotFixture.version,
+    payloadHash: validPlayerSnapshotFixture.payloadHash,
   },
-} satisfies TenderDetail;
+} satisfies PlayerDetail;
 
-export const validTenderChangeEventFixture = {
+export const validChangeEventFixture = {
   schemaVersion: 1,
   changeEventId: "8ebbd601-b247-44e8-89ee-928164ebfad9",
-  tenderId: validTenderFixture.tenderId,
-  sourceId: validTenderFixture.sourceId,
-  fromSnapshotId: validTenderSnapshotFixture.snapshotId,
+  entityId: trackedPlayerId,
+  entityType: "player",
+  sourceId: demoSourceId,
+  fromSnapshotId: validPlayerSnapshotFixture.snapshotId,
   toSnapshotId: "56f00f0d-f6f1-47a3-8693-1578423dc6b1",
-  detectedAt: "2026-08-21T05:00:00.000Z",
+  detectedAt: "2026-08-21T14:00:00.000Z",
   changes: [
-    {
-      kind: "deadline",
-      before: validTenderFixture.submissionDeadline,
-      after: tenderWithCorrigendumFixture.submissionDeadline,
-    },
+    { kind: "appearances", before: 33, after: 34 },
+    { kind: "goals", before: 18, after: 21 },
+    { kind: "minutes", before: 2820, after: 2910 },
   ],
-} satisfies TenderChangeEvent;
+} satisfies FootballChangeEvent;
 
 export const validQuarantinedExtractionFixture = {
   schemaVersion: 1,
   quarantineId: "0db38b22-1595-4e1d-b66c-58aebf5ca387",
-  sourceId: validTenderFixture.sourceId,
+  sourceId: demoSourceId,
   extractorVersion: "fixture-v1",
-  observedAt: "2026-08-20T05:05:00.000Z",
+  observedAt: "2026-08-20T14:05:00.000Z",
   payloadHash: "c".repeat(64),
   rawPayload: {
-    ...validTenderFixture,
-    submissionDeadline: "tomorrow",
+    ...validPlayerFixture,
+    stats: { ...validPlayerFixture.stats, goals: "eighteen" },
   },
   issues: [
     {
-      code: "invalid_string",
-      path: ["submissionDeadline"],
-      message: "Invalid datetime",
+      code: "invalid_type",
+      path: ["stats", "goals"],
+      message: "Expected number, received string",
     },
   ],
 } satisfies QuarantinedExtraction;
@@ -188,36 +375,76 @@ export const emptyPaginationFixture = {
   hasMore: false,
 } satisfies Pagination;
 
-const responseGeneratedAt = "2026-08-21T05:15:00.000Z";
+const responseGeneratedAt = "2026-08-21T14:15:00.000Z";
 
 export const validApiHealthResponseFixture = {
   data: {
     schemaVersion: 1,
-    service: "bidsentinel-api",
+    service: "cardpulse-api",
     status: "ok",
   },
   generatedAt: responseGeneratedAt,
 } satisfies ApiHealthResponse;
 
-export const validTenderListResponseFixture = {
-  data: [validTenderSummaryFixture],
+export const validPlayerListResponseFixture = {
+  data: [validPlayerSummaryFixture],
   pagination: firstPagePaginationFixture,
   generatedAt: responseGeneratedAt,
-} satisfies TenderListResponse;
+} satisfies PlayerListResponse;
 
-export const emptyTenderListResponseFixture = {
+export const emptyPlayerListResponseFixture = {
   data: [],
   pagination: emptyPaginationFixture,
   generatedAt: responseGeneratedAt,
-} satisfies TenderListResponse;
+} satisfies PlayerListResponse;
 
-export const validTenderDetailResponseFixture = {
-  data: validTenderDetailFixture,
+export const validPlayerDetailResponseFixture = {
+  data: validPlayerDetailFixture,
   generatedAt: responseGeneratedAt,
-} satisfies TenderDetailResponse;
+} satisfies PlayerDetailResponse;
+
+export const validTeamListResponseFixture = {
+  data: [
+    {
+      ...(validTeamFixtures[0] as TeamSummaryRecord),
+      latestSnapshot: {
+        snapshotId: validPlayerSnapshotFixture.snapshotId,
+        version: 1,
+      },
+    },
+  ],
+  pagination: firstPagePaginationFixture,
+  generatedAt: responseGeneratedAt,
+} satisfies TeamListResponse;
+
+export const emptyTeamListResponseFixture = {
+  data: [],
+  pagination: emptyPaginationFixture,
+  generatedAt: responseGeneratedAt,
+} satisfies TeamListResponse;
+
+export const validStandingsListResponseFixture = {
+  data: [
+    {
+      ...(validStandingFixtures[0] as StandingEntry),
+      latestSnapshot: {
+        snapshotId: validPlayerSnapshotFixture.snapshotId,
+        version: 1,
+      },
+    },
+  ],
+  pagination: firstPagePaginationFixture,
+  generatedAt: responseGeneratedAt,
+} satisfies StandingsListResponse;
+
+export const emptyStandingsListResponseFixture = {
+  data: [],
+  pagination: emptyPaginationFixture,
+  generatedAt: responseGeneratedAt,
+} satisfies StandingsListResponse;
 
 export const validChangeEventListResponseFixture = {
-  data: [validTenderChangeEventFixture],
+  data: [validChangeEventFixture],
   pagination: firstPagePaginationFixture,
   generatedAt: responseGeneratedAt,
 } satisfies ChangeEventListResponse;
@@ -257,11 +484,23 @@ export const validRecoveryEvidenceResponseFixture = {
   generatedAt: responseGeneratedAt,
 } satisfies RecoveryEvidenceResponse;
 
+export const validTeamDetailResponseFixture = {
+  data: {
+    ...(validTeamFixtures[0] as TeamSummaryRecord),
+    latestSnapshot: {
+      snapshotId: validPlayerSnapshotFixture.snapshotId,
+      version: 1,
+      payloadHash: "d".repeat(64),
+    },
+  },
+  generatedAt: responseGeneratedAt,
+} satisfies TeamDetailResponse;
+
 export const validApiErrorResponseFixture = {
   error: {
     code: "not_found",
     status: 404,
-    message: "Tender gem:missing was not found",
+    message: "Player openligadb:missing was not found",
     requestId: "req-01k32nq4xdmkhkdxj8c86v9a8w",
     details: [],
   },

@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  FootballRecordSchema,
   QuarantinedExtractionSchema,
-  TenderSchema,
+  entityIdOf,
+  type FootballRecord,
   type QuarantinedExtraction,
-  type Tender,
 } from "@bidsentinel/contracts";
 
 export interface ExtractionContext {
@@ -13,8 +14,8 @@ export interface ExtractionContext {
   observedAt: string;
 }
 
-export type TenderValidationResult =
-  | { ok: true; value: Tender }
+export type FootballValidationResult =
+  | { ok: true; value: FootballRecord; entityId: string }
   | { ok: false; quarantine: QuarantinedExtraction };
 
 function normalizeForHash(value: unknown): unknown {
@@ -46,11 +47,16 @@ export function hashPayload(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
-export function validateTenderExtraction(
+/**
+ * Validates one extracted football record against the frozen contract and
+ * attributes it to the collecting source. Any failure produces a complete
+ * quarantine record; a malformed row never reaches the pipeline.
+ */
+export function validateFootballExtraction(
   input: unknown,
   context: ExtractionContext,
-): TenderValidationResult {
-  const result = TenderSchema.safeParse(input);
+): FootballValidationResult {
+  const result = FootballRecordSchema.safeParse(input);
   const issues = result.success
     ? result.data.sourceId === context.sourceId
       ? []
@@ -68,7 +74,7 @@ export function validateTenderExtraction(
       }));
 
   if (result.success && issues.length === 0) {
-    return { ok: true, value: result.data };
+    return { ok: true, value: result.data, entityId: entityIdOf(result.data) };
   }
 
   const quarantine = QuarantinedExtractionSchema.parse({

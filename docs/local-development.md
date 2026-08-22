@@ -1,35 +1,20 @@
 # Local development
 
-## One-time setup
+## Setup
 
 ```bash
 corepack enable
 pnpm install
+cp .env.example .env
 ```
 
-If pnpm is already installed, `corepack enable` is unnecessary.
+`.env` is gitignored. Node loads the root file through
+`--env-file-if-exists=../../.env` in the collector-worker scripts; there is no
+dotenv dependency. Blank Bright Data credentials select safe mock mode.
 
-## Work on contracts first
+## Run the full local product
 
-```bash
-pnpm --filter @bidsentinel/contracts test
-pnpm --filter @bidsentinel/contracts typecheck
-```
-
-Fixtures live in `packages/contracts/src/fixtures.ts`. Contract changes should
-add an acceptance fixture and a rejection test where applicable.
-
-## Run the collector scenario
-
-```bash
-pnpm demo:collector
-```
-
-The demo processes a valid tender, an invalid deadline, then a recovered tender
-with a deadline extension and corrigendum. It prints snapshot versions, change
-kinds, quarantine count, recovery evidence count, and final source state.
-
-## Run the complete local demo
+Use three terminals:
 
 ```bash
 pnpm dev:chaos-source
@@ -37,38 +22,55 @@ pnpm start:api
 pnpm dev:web
 ```
 
-Run each command in its own terminal, then open `http://127.0.0.1:4173`. With no
-Bright Data credentials, the API and dashboard clearly identify themselves as
-mock mode. Use the six numbered actions in order.
+Open:
 
-The chaos source is at `http://127.0.0.1:4311`. Its stable public target is
-`/tenders`; use `/__control` to switch among `baseline-table`, `layout-cards`,
-`amended`, and `unavailable`.
+- web: `http://127.0.0.1:4173`
+- API runtime truth: `http://127.0.0.1:4321/api/runtime`
+- scraper target: `http://127.0.0.1:4311/players`
+- local chaos controls: `http://127.0.0.1:4311/__control`
 
-## Run live collection
+Chaos modes are `baseline-table`, `drift-cards`, `amended-stats`, and
+`unavailable`.
 
-```bash
-cp .env.example .env
-# Fill the three BRIGHT_DATA_* values and BIDSENTINEL_SOURCE_ID privately.
-pnpm collect
+## Environment variables
+
+```dotenv
+BRIGHT_DATA_API_TOKEN=
+BRIGHT_DATA_COLLECTOR_ID=
+BRIGHT_DATA_TARGET_URL=http://127.0.0.1:4311/players
+CARDPULSE_SOURCE_ID=openligadb-football-demo
+CARDPULSE_ENABLE_LIVE_MUTATIONS=false
+CARDPULSE_OPERATOR_TOKEN=
 ```
 
-The API enters live mode only when the token, collector ID, and target URL are
-all present in its process environment. Live API mutations also require
-`BIDSENTINEL_ENABLE_LIVE_MUTATIONS=true`, a private 32+ character operator
-token, and the matching header on every mutating request. Keep the flag false
-for read-only inspection.
+The API enters live mode only when all three `BRIGHT_DATA_*` values are
+present and the collector ID is a valid `c_*` value. A live collection or heal
+also requires the mutation flag plus a private token of at least 32 characters.
+Send that token only in `X-CardPulse-Operator-Token`.
 
-## Full verification
+`127.0.0.1` cannot be reached by Bright Data's cloud. For a real run, deploy or
+tunnel the chaos source, keep `/__control` private, and set
+`BRIGHT_DATA_TARGET_URL` to the public `/players` URL.
+
+Legacy `BIDSENTINEL_*` variables remain a code-only migration fallback. Do not
+use them for new setup.
+
+## Commands
 
 ```bash
-pnpm check
+pnpm collect          # one live cycle if configured; deterministic mock otherwise
+pnpm demo:collector   # local validation/quarantine/amendment story
+pnpm check            # lint + typecheck + tests + builds + collector demo
 ```
 
-For a focused workspace, replace the root command with:
+Focused workspaces:
 
 ```bash
-pnpm --filter <workspace-name> test
-pnpm --filter <workspace-name> typecheck
-pnpm --filter <workspace-name> build
+pnpm --filter @bidsentinel/contracts test
+pnpm --filter @bidsentinel/brightdata test
+pnpm --filter @bidsentinel/collector-worker test
+pnpm --filter @bidsentinel/web test
 ```
+
+Never commit `.env`, paste tokens into recorded terminals, expose `/__control`,
+or deploy the `/api/dev/*` routes without real authentication.

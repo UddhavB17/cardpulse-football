@@ -1,5 +1,8 @@
-import { mapRawRowToTender } from "@bidsentinel/brightdata";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import {
+  validPlayerFixture,
+  demoRecordsFor,
+} from "@bidsentinel/contracts/fixtures";
+import { mapRawRowToFootballRecord } from "@bidsentinel/brightdata";
 
 import { createRuntimeFromEnv, runConfiguredCollection } from "./runtime.js";
 
@@ -13,27 +16,27 @@ async function main() {
 
   const receivedAt = new Date().toISOString();
   const rawRows = [
-    {
-      ...validTenderFixture,
+    ...demoRecordsFor("valid").map((record) => ({
+      ...record,
       sourceId: runtime.sourceId,
       observedAt: receivedAt,
-    },
+    })),
     {
-      id: "2026-invalid-tender-002",
+      entityType: "player",
+      playerId: `${runtime.sourceId}:player:broken-row`,
       status: "open",
-      url: "https://example.gov.test/tenders/invalid-002",
+      url: "https://data.football-demo.test/players/broken-row",
     },
     {
-      ...validTenderFixture,
-      tenderId: `${runtime.sourceId}:2026-invalid-tender-003`,
+      ...validPlayerFixture,
+      playerId: `${runtime.sourceId}:player:bad-goals`,
       sourceId: runtime.sourceId,
-      externalId: "2026-invalid-tender-003",
-      submissionDeadline: "invalid-date-format",
       observedAt: receivedAt,
+      stats: { ...validPlayerFixture.stats, goals: "eighteen" },
     },
   ];
   const payloads = rawRows.map((row) =>
-    mapRawRowToTender(row, runtime.sourceId, receivedAt),
+    mapRawRowToFootballRecord(row, runtime.sourceId, receivedAt),
   );
   const results = await runtime.pipeline.processBatchWithHealing(
     payloads,
@@ -65,6 +68,6 @@ async function main() {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[BidSentinel] Collection cycle failed: ${message}`);
+  console.error(`[CardPulse] Collection cycle failed: ${message}`);
   process.exitCode = 1;
 });

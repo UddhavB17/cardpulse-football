@@ -1,6 +1,6 @@
-export { detectTenderChanges } from "./change-detection.js";
+export { detectRecordChanges } from "./change-detection.js";
 export {
-  BidSentinelPipeline,
+  CardPulsePipeline,
   type PipelineExtractionContext,
   type ProcessingResult,
 } from "./pipeline.js";
@@ -11,18 +11,21 @@ export {
   type RecoveryVerification,
 } from "./healing-coordinator.js";
 export {
+  buildMockPreviewRecord,
   createRuntimeFromEnv,
+  isAuthorizedOperatorToken,
   runConfiguredCollection,
-  type BidSentinelRuntime,
+  type CardPulseRuntime,
   type CollectionRunSummary,
   type RuntimeMode,
 } from "./runtime.js";
 export {
   DEFAULT_SEMANTIC_DIFF_POLICY,
-  diffTenderSnapshots,
+  diffFootballSnapshots,
   type SemanticDiffPolicy,
   type SnapshotDiffInput,
 } from "./semantic-diff.js";
+export { recordScalarFields, changedScalarFields } from "./record-fields.js";
 export {
   InMemoryChangeEventStore,
   InMemoryQuarantineStore,

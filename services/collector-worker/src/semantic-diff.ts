@@ -1,14 +1,17 @@
 import {
   SemanticDiffResultSchema,
   SnapshotSourceHealthSchema,
-  TenderSnapshotSchema,
+  FootballSnapshotSchema,
+  type FootballRecord,
   type SemanticDiffEvidence,
   type SemanticDiffIssue,
   type SemanticDiffResult,
   type SnapshotSourceHealth,
-  type TenderSnapshot,
+  type FootballSnapshot,
 } from "@bidsentinel/contracts";
 import { stableStringify } from "@bidsentinel/validation";
+
+import { recordScalarFields } from "./record-fields.js";
 
 export interface SnapshotDiffInput {
   previous: unknown;
@@ -32,7 +35,7 @@ type EvidenceRule = SemanticDiffEvidence["rule"];
 type EvidenceFacts = SemanticDiffEvidence["facts"];
 
 interface SnapshotCheck {
-  candidate: TenderSnapshot | null;
+  candidate: FootballSnapshot | null;
   issues: SemanticDiffIssue[];
 }
 
@@ -51,61 +54,6 @@ function prefixIssues(
   }));
 }
 
-function duplicateIssues(
-  snapshot: TenderSnapshot,
-  prefix: "previous" | "current",
-): SemanticDiffIssue[] {
-  const issues: SemanticDiffIssue[] = [];
-
-  const inspect = (
-    values: Array<string | null>,
-    collection: "documents" | "corrigenda",
-    field: "id" | "url",
-  ): void => {
-    const firstIndex = new Map<string, number>();
-    values.forEach((value, index) => {
-      if (value === null) {
-        return;
-      }
-
-      const seenAt = firstIndex.get(value);
-      if (seenAt === undefined) {
-        firstIndex.set(value, index);
-        return;
-      }
-
-      issues.push({
-        code: "duplicate_reference",
-        path: [prefix, "tender", collection, index, field],
-        message: `Reference ${value} duplicates index ${seenAt}`,
-      });
-    });
-  };
-
-  inspect(
-    snapshot.tender.documents.map((document) => document.id),
-    "documents",
-    "id",
-  );
-  inspect(
-    snapshot.tender.documents.map((document) => document.url),
-    "documents",
-    "url",
-  );
-  inspect(
-    snapshot.tender.corrigenda.map((corrigendum) => corrigendum.id),
-    "corrigenda",
-    "id",
-  );
-  inspect(
-    snapshot.tender.corrigenda.map((corrigendum) => corrigendum.url),
-    "corrigenda",
-    "url",
-  );
-
-  return issues;
-}
-
 function validateSnapshot(
   value: unknown,
   prefix: "previous" | "current",
@@ -114,7 +62,7 @@ function validateSnapshot(
     return { candidate: null, issues: [] };
   }
 
-  const parsed = TenderSnapshotSchema.safeParse(value);
+  const parsed = FootballSnapshotSchema.safeParse(value);
   if (!parsed.success) {
     return {
       candidate: null,
@@ -122,10 +70,7 @@ function validateSnapshot(
     };
   }
 
-  return {
-    candidate: parsed.data,
-    issues: duplicateIssues(parsed.data, prefix),
-  };
+  return { candidate: parsed.data, issues: [] };
 }
 
 function fallbackSourceId(value: unknown): string {
@@ -143,8 +88,8 @@ function fallbackSourceId(value: unknown): string {
 function evidenceContext(
   sourceHealth: SnapshotSourceHealth | null,
   rawSourceHealth: unknown,
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
+  previous: FootballSnapshot | null,
+  current: FootballSnapshot | null,
 ): { sourceId: string; observedAt: string } {
   return {
     sourceId:
@@ -163,8 +108,8 @@ function evidenceContext(
 function createEvidence(
   rule: EvidenceRule,
   context: { sourceId: string; observedAt: string },
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
+  previous: FootballSnapshot | null,
+  current: FootballSnapshot | null,
   facts: EvidenceFacts,
 ): SemanticDiffEvidence {
   return {
@@ -180,8 +125,8 @@ function createEvidence(
 
 function invalidResult(
   issues: SemanticDiffIssue[],
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
+  previous: FootballSnapshot | null,
+  current: FootballSnapshot | null,
   context: { sourceId: string; observedAt: string },
   health: SnapshotSourceHealth | null,
 ): SemanticDiffResult {
@@ -193,7 +138,7 @@ function invalidResult(
       previousRecordCount: health.previousRecordCount,
       currentRecordCount: health.currentRecordCount,
       consecutiveEmptyResults: health.consecutiveEmptyResults,
-      consecutiveTenderAbsences: health.consecutiveTenderAbsences,
+      consecutiveAbsences: health.consecutiveAbsences,
     });
   }
 
@@ -203,7 +148,7 @@ function invalidResult(
     events: [
       {
         kind: "invalid_snapshot",
-        tenderId: current?.tenderId ?? previous?.tenderId ?? null,
+        entityId: current?.entityId ?? previous?.entityId ?? null,
         issues,
         evidence: createEvidence(
           "snapshot_rejected",
@@ -219,8 +164,8 @@ function invalidResult(
 
 function sourceHealthIssues(
   health: SnapshotSourceHealth,
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
+  previous: FootballSnapshot | null,
+  current: FootballSnapshot | null,
   policy: SemanticDiffPolicy,
 ): SemanticDiffIssue[] {
   const issues: SemanticDiffIssue[] = [];
@@ -271,7 +216,7 @@ function sourceHealthIssues(
     issues.push({
       code: "temporary_empty_result",
       path: ["sourceHealth", "currentRecordCount"],
-      message: "An empty collection result cannot prove tender removal",
+      message: "An empty collection result cannot prove entity removal",
     });
   } else if (
     health.previousRecordCount >= policy.minimumRecordCountForCollapseCheck &&
@@ -293,19 +238,27 @@ function sourceHealthIssues(
 }
 
 function identityAndChronologyIssues(
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
+  previous: FootballSnapshot | null,
+  current: FootballSnapshot | null,
 ): SemanticDiffIssue[] {
   if (previous === null || current === null) {
     return [];
   }
 
   const issues: SemanticDiffIssue[] = [];
-  if (previous.tenderId !== current.tenderId) {
+  if (previous.entityId !== current.entityId) {
     issues.push({
-      code: "tender_id_mismatch",
-      path: ["current", "tenderId"],
-      message: "Cannot diff snapshots for different tenders",
+      code: "entity_id_mismatch",
+      path: ["current", "entityId"],
+      message: "Cannot diff snapshots for different entities",
+    });
+  }
+
+  if (previous.entityType !== current.entityType) {
+    issues.push({
+      code: "entity_type_mismatch",
+      path: ["current", "entityType"],
+      message: "Cannot diff snapshots across different entity types",
     });
   }
 
@@ -329,51 +282,52 @@ function identityAndChronologyIssues(
   return issues;
 }
 
-function corrigendumRegressionIssues(
-  previous: TenderSnapshot | null,
-  current: TenderSnapshot | null,
-): SemanticDiffIssue[] {
-  if (previous === null || current === null) {
-    return [];
-  }
-
-  const currentById = new Map(
-    current.tender.corrigenda.map((corrigendum) => [
-      corrigendum.id,
-      corrigendum,
+function fieldChangedEvents(
+  previous: FootballSnapshot,
+  current: FootballSnapshot,
+  context: { sourceId: string; observedAt: string },
+): Extract<SemanticDiffResult["events"][number], { kind: "field_changed" }>[] {
+  const previousFields = new Map(
+    recordScalarFields(previous.record as FootballRecord).map((entry) => [
+      entry.field,
+      entry.value,
     ]),
   );
 
-  return previous.tender.corrigenda.flatMap((previousCorrigendum, index) => {
-    const currentCorrigendum = currentById.get(previousCorrigendum.id);
-    if (currentCorrigendum === undefined) {
-      return [
-        {
-          code: "corrigendum_reference_removed",
-          path: ["current", "tender", "corrigenda", index],
-          message: `Previously verified corrigendum ${previousCorrigendum.id} is missing`,
-        },
-      ];
+  const events: Extract<
+    SemanticDiffResult["events"][number],
+    { kind: "field_changed" }
+  >[] = [];
+  for (const entry of recordScalarFields(current.record as FootballRecord)) {
+    const before = previousFields.get(entry.field);
+    if (before === undefined || before === entry.value) {
+      continue;
     }
 
-    if (
-      stableStringify(previousCorrigendum) !==
-      stableStringify(currentCorrigendum)
-    ) {
-      return [
+    events.push({
+      kind: "field_changed",
+      entityId: current.entityId,
+      entityType: current.entityType,
+      field: entry.field,
+      before,
+      after: entry.value,
+      evidence: createEvidence(
+        "field_value_changed",
+        context,
+        previous,
+        current,
         {
-          code: "corrigendum_reference_changed",
-          path: ["current", "tender", "corrigenda", index],
-          message: `Previously verified corrigendum ${previousCorrigendum.id} changed`,
+          field: entry.field,
+          beforeValue: before,
+          afterValue: entry.value,
         },
-      ];
-    }
-
-    return [];
-  });
+      ),
+    });
+  }
+  return events;
 }
 
-export function diffTenderSnapshots(
+export function diffFootballSnapshots(
   input: SnapshotDiffInput,
   policy: SemanticDiffPolicy = DEFAULT_SEMANTIC_DIFF_POLICY,
 ): SemanticDiffResult {
@@ -413,7 +367,6 @@ export function diffTenderSnapshots(
   issues.push(
     ...sourceHealthIssues(health, previous, current, policy),
     ...identityAndChronologyIssues(previous, current),
-    ...corrigendumRegressionIssues(previous, current),
   );
   if (issues.length > 0) {
     return invalidResult(issues, previous, current, context, health);
@@ -426,7 +379,7 @@ export function diffTenderSnapshots(
       events: [
         {
           kind: "no_change",
-          tenderId: null,
+          entityId: null,
           reason: "no_baseline_or_current",
           evidence: createEvidence(
             "no_baseline_or_current",
@@ -449,8 +402,9 @@ export function diffTenderSnapshots(
       lastVerifiedSnapshot: current,
       events: [
         {
-          kind: "new_tender",
-          tenderId: current.tenderId,
+          kind: "new_record",
+          entityId: current.entityId,
+          entityType: current.entityType,
           evidence: createEvidence(
             "first_verified_snapshot",
             context,
@@ -458,7 +412,9 @@ export function diffTenderSnapshots(
             current,
             {
               currentVersion: current.version,
-              externalId: current.tender.externalId,
+              externalId: stableStringify(
+                (current.record as FootballRecord).externalId ?? null,
+              ),
             },
           ),
         },
@@ -467,23 +423,22 @@ export function diffTenderSnapshots(
   }
 
   if (previous !== null && current === null) {
-    if (
-      health.consecutiveTenderAbsences >= policy.minimumAbsenceConfirmations
-    ) {
+    if (health.consecutiveAbsences >= policy.minimumAbsenceConfirmations) {
       return SemanticDiffResultSchema.parse({
         decision: "mark_removed",
         lastVerifiedSnapshot: previous,
         events: [
           {
-            kind: "tender_removed",
-            tenderId: previous.tenderId,
+            kind: "entity_removed",
+            entityId: previous.entityId,
+            entityType: previous.entityType,
             evidence: createEvidence(
-              "confirmed_tender_absence",
+              "confirmed_entity_absence",
               context,
               previous,
               null,
               {
-                absenceConfirmations: health.consecutiveTenderAbsences,
+                absenceConfirmations: health.consecutiveAbsences,
                 requiredConfirmations: policy.minimumAbsenceConfirmations,
                 previousRecordCount: health.previousRecordCount,
                 currentRecordCount: health.currentRecordCount,
@@ -500,7 +455,7 @@ export function diffTenderSnapshots(
       events: [
         {
           kind: "no_change",
-          tenderId: previous.tenderId,
+          entityId: previous.entityId,
           reason: "absence_unconfirmed",
           evidence: createEvidence(
             "absence_unconfirmed",
@@ -508,7 +463,7 @@ export function diffTenderSnapshots(
             previous,
             null,
             {
-              absenceConfirmations: health.consecutiveTenderAbsences,
+              absenceConfirmations: health.consecutiveAbsences,
               requiredConfirmations: policy.minimumAbsenceConfirmations,
             },
           ),
@@ -521,93 +476,26 @@ export function diffTenderSnapshots(
     throw new Error("Unreachable snapshot state");
   }
 
-  const events: SemanticDiffResult["events"] = [];
-  const previousDeadline = previous.tender.submissionDeadline;
-  const currentDeadline = current.tender.submissionDeadline;
-  const previousDeadlineEpoch =
-    previousDeadline === null ? null : Date.parse(previousDeadline);
-  const currentDeadlineEpoch =
-    currentDeadline === null ? null : Date.parse(currentDeadline);
-
-  if (previousDeadlineEpoch !== currentDeadlineEpoch) {
-    events.push({
-      kind: "deadline_changed",
-      tenderId: current.tenderId,
-      before: previousDeadline,
-      after: currentDeadline,
-      evidence: createEvidence(
-        "deadline_instant_changed",
-        context,
-        previous,
-        current,
-        {
-          beforeEpochMs: previousDeadlineEpoch,
-          afterEpochMs: currentDeadlineEpoch,
-        },
-      ),
-    });
-  }
-
-  if (previous.tender.status !== current.tender.status) {
-    events.push({
-      kind: "status_changed",
-      tenderId: current.tenderId,
-      before: previous.tender.status,
-      after: current.tender.status,
-      evidence: createEvidence(
-        "status_value_changed",
-        context,
-        previous,
-        current,
-        {
-          beforeStatus: previous.tender.status,
-          afterStatus: current.tender.status,
-        },
-      ),
-    });
-  }
-
-  const previousCorrigendumIds = new Set(
-    previous.tender.corrigenda.map((corrigendum) => corrigendum.id),
-  );
-  for (const corrigendum of current.tender.corrigenda) {
-    if (!previousCorrigendumIds.has(corrigendum.id)) {
-      events.push({
-        kind: "corrigendum_added",
-        tenderId: current.tenderId,
-        corrigendum,
-        evidence: createEvidence(
-          "new_corrigendum_reference",
-          context,
-          previous,
-          current,
-          {
-            corrigendumId: corrigendum.id,
-            publishedAt: corrigendum.publishedAt,
-          },
-        ),
-      });
-    }
-  }
+  const events = fieldChangedEvents(previous, current, context);
 
   if (events.length === 0) {
-    events.push({
-      kind: "no_change",
-      tenderId: current.tenderId,
-      reason: "semantic_state_unchanged",
-      evidence: createEvidence(
-        "semantic_state_unchanged",
-        context,
-        previous,
-        current,
+    return SemanticDiffResultSchema.parse({
+      decision: "accept_current",
+      lastVerifiedSnapshot: current,
+      events: [
         {
-          deadlineEpochMs: currentDeadlineEpoch,
-          status: current.tender.status,
-          corrigendumIds: current.tender.corrigenda.map(
-            (corrigendum) => corrigendum.id,
+          kind: "no_change",
+          entityId: current.entityId,
+          reason: "semantic_state_unchanged",
+          evidence: createEvidence(
+            "semantic_state_unchanged",
+            context,
+            previous,
+            current,
+            {},
           ),
         },
-      ),
+      ],
     });
   }
 

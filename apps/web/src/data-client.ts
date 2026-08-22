@@ -1,23 +1,31 @@
 import {
   ChangeEventListResponseSchema,
+  PlayerListResponseSchema,
   QuarantineListResponseSchema,
+  RuntimeStatusResponseSchema,
   SourceHealthListResponseSchema,
-  TenderListResponseSchema,
+  StandingsListResponseSchema,
+  TeamListResponseSchema,
   type ChangeEventListResponse,
+  type PlayerListResponse,
   type QuarantineListResponse,
   type RecoveryEvidence,
+  type RuntimeStatus,
   type SourceHealthListResponse,
-  type TenderChangeEvent,
-  type TenderListResponse,
-  type TenderSummary,
+  type StandingsListResponse,
+  type TeamListResponse,
 } from "@bidsentinel/contracts";
 import {
-  tenderWithCorrigendumFixture,
+  amendedPlayerFixture,
+  validChangeEventFixture,
+  validPlayerSnapshotFixture,
+  validPlayerSummaryFixture,
   validQuarantinedExtractionFixture,
   validRecoveryEvidenceFixture,
   validSourceHealthFixture,
-  validTenderChangeEventFixture,
-  validTenderSummaryFixture,
+  validStandingFixtures,
+  validTeamFixtures,
+  demoSourceId,
 } from "@bidsentinel/contracts/fixtures";
 
 export type RuntimeMode = "mock" | "live";
@@ -32,15 +40,6 @@ export type HealingState =
   | "rejected"
   | "recovered"
   | "recovery_failed";
-
-export interface RuntimeStatus {
-  mode: RuntimeMode;
-  sourceId: string;
-  collectorConfigured: boolean;
-  targetConfigured: boolean;
-  liveMutationsEnabled: boolean;
-  configurationIssues: string[];
-}
 
 export interface HealingStatus {
   mode: RuntimeMode;
@@ -62,7 +61,9 @@ export interface HealingStatus {
 
 export interface DashboardSnapshot {
   runtime: RuntimeStatus;
-  tenders: TenderListResponse;
+  players: PlayerListResponse;
+  teams: TeamListResponse;
+  standings: StandingsListResponse;
   changes: ChangeEventListResponse;
   sources: SourceHealthListResponse;
   quarantines: QuarantineListResponse;
@@ -77,7 +78,7 @@ export interface MutationOptions {
   operatorToken?: string;
 }
 
-export interface BidSentinelDataClient {
+export interface CardPulseDataClient {
   load(): Promise<DashboardSnapshot>;
   collect(mode: CollectionMode, options?: MutationOptions): Promise<void>;
   progressHealing(options?: MutationOptions): Promise<void>;
@@ -103,32 +104,6 @@ function joinUrl(baseUrl: string, path: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseRuntimeResponse(value: unknown): RuntimeStatus {
-  if (!isRecord(value) || !isRecord(value.data)) {
-    throw new DataClientError("The API returned an invalid runtime response");
-  }
-  const data = value.data;
-  if (
-    (data.mode !== "mock" && data.mode !== "live") ||
-    typeof data.sourceId !== "string" ||
-    typeof data.collectorConfigured !== "boolean" ||
-    typeof data.targetConfigured !== "boolean" ||
-    typeof data.liveMutationsEnabled !== "boolean" ||
-    !Array.isArray(data.configurationIssues) ||
-    !data.configurationIssues.every((item) => typeof item === "string")
-  ) {
-    throw new DataClientError("The API returned an invalid runtime response");
-  }
-  return {
-    mode: data.mode,
-    sourceId: data.sourceId,
-    collectorConfigured: data.collectorConfigured,
-    targetConfigured: data.targetConfigured,
-    liveMutationsEnabled: data.liveMutationsEnabled,
-    configurationIssues: [...data.configurationIssues],
-  };
 }
 
 const healingStates = new Set<HealingState>([
@@ -225,39 +200,82 @@ async function readJson(response: Response): Promise<unknown> {
   return body;
 }
 
-export class HttpBidSentinelDataClient implements BidSentinelDataClient {
+function parseWithContract<T>(parse: () => T, view: string): T {
+  try {
+    return parse();
+  } catch {
+    throw new DataClientError(
+      `The ${view} response failed the frozen contract validation`,
+    );
+  }
+}
+
+export class HttpCardPulseDataClient implements CardPulseDataClient {
   constructor(
     private readonly baseUrl = "",
     private readonly fetchFn: FetchLike = (input, init) => fetch(input, init),
   ) {}
 
   async load(): Promise<DashboardSnapshot> {
+    // The frozen Zod contracts validate every view client-side; a payload that
+    // fails schema can never reach the card renderer.
     const runtimeValue = await this.get("/api/runtime");
-    const runtime = parseRuntimeResponse(runtimeValue);
+    const runtimeResponse = parseWithContract(
+      () => RuntimeStatusResponseSchema.parse(runtimeValue),
+      "runtime",
+    );
     const [
-      tendersValue,
+      playersValue,
+      teamsValue,
+      standingsValue,
       changesValue,
       sourcesValue,
       quarantinesValue,
       healingValue,
     ] = await Promise.all([
-      this.get("/api/tenders"),
+      this.get("/api/players"),
+      this.get("/api/teams"),
+      this.get("/api/standings"),
       this.get("/api/changes"),
       this.get("/api/sources"),
       this.get("/api/quarantines"),
-      this.get(`/api/healing/${encodeURIComponent(runtime.sourceId)}`),
+      this.get(
+        `/api/healing/${encodeURIComponent(runtimeResponse.data.sourceId)}`,
+      ),
     ]);
 
-    const tenders = TenderListResponseSchema.parse(tendersValue);
-    const changes = ChangeEventListResponseSchema.parse(changesValue);
-    const sources = SourceHealthListResponseSchema.parse(sourcesValue);
-    const quarantines = QuarantineListResponseSchema.parse(quarantinesValue);
+    const players = parseWithContract(
+      () => PlayerListResponseSchema.parse(playersValue),
+      "players",
+    );
+    const teams = parseWithContract(
+      () => TeamListResponseSchema.parse(teamsValue),
+      "teams",
+    );
+    const standings = parseWithContract(
+      () => StandingsListResponseSchema.parse(standingsValue),
+      "standings",
+    );
+    const changes = parseWithContract(
+      () => ChangeEventListResponseSchema.parse(changesValue),
+      "changes",
+    );
+    const sources = parseWithContract(
+      () => SourceHealthListResponseSchema.parse(sourcesValue),
+      "sources",
+    );
+    const quarantines = parseWithContract(
+      () => QuarantineListResponseSchema.parse(quarantinesValue),
+      "quarantines",
+    );
     const healing = parseHealingResponse(healingValue);
     const receivedAt = new Date().toISOString();
 
     return {
-      runtime,
-      tenders,
+      runtime: runtimeResponse.data,
+      players,
+      teams,
+      standings,
       changes,
       sources,
       quarantines,
@@ -265,7 +283,9 @@ export class HttpBidSentinelDataClient implements BidSentinelDataClient {
       receivedAt,
       stale: isGeneratedDataStale(
         [
-          tenders.generatedAt,
+          players.generatedAt,
+          teams.generatedAt,
+          standings.generatedAt,
           changes.generatedAt,
           sources.generatedAt,
           quarantines.generatedAt,
@@ -324,8 +344,8 @@ export class HttpBidSentinelDataClient implements BidSentinelDataClient {
     } catch (error) {
       throw new DataClientError(
         error instanceof Error
-          ? `Could not reach BidSentinel API: ${error.message}`
-          : "Could not reach BidSentinel API",
+          ? `Could not reach the CardPulse API: ${error.message}`
+          : "Could not reach the CardPulse API",
       );
     }
     return readJson(response);
@@ -342,7 +362,7 @@ export class HttpBidSentinelDataClient implements BidSentinelDataClient {
     };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (operatorToken) {
-      headers["x-bidsentinel-operator-token"] = operatorToken;
+      headers["x-cardpulse-operator-token"] = operatorToken;
     }
 
     let response: Response;
@@ -357,8 +377,8 @@ export class HttpBidSentinelDataClient implements BidSentinelDataClient {
     } catch (error) {
       throw new DataClientError(
         error instanceof Error
-          ? `BidSentinel action failed: ${error.message}`
-          : "BidSentinel action failed",
+          ? `CardPulse action failed: ${error.message}`
+          : "CardPulse action failed",
       );
     }
     return readJson(response);
@@ -375,41 +395,54 @@ function activeIncident(state: HealingState, now: string) {
     incidentId: "ec1ef7d9-f67c-45ab-b4a9-dfcf406564d2",
     openedAt: now,
     reason: "schema-drift" as const,
-    detail: "Required tender fields disappeared after a source layout change.",
+    detail: "Required player fields disappeared after a source layout change.",
   };
 }
 
-function demoTender(amended: boolean): TenderSummary {
-  return amended
-    ? {
-        ...validTenderSummaryFixture,
-        submissionDeadline: tenderWithCorrigendumFixture.submissionDeadline,
-        observedAt: tenderWithCorrigendumFixture.observedAt,
-        latestSnapshot: {
-          snapshotId: "56f00f0d-f6f1-47a3-8693-1578423dc6b1",
-          version: 2,
-        },
-        corrigendumCount: 1,
-      }
-    : structuredClone(validTenderSummaryFixture);
-}
-
-function amendmentEvent(): TenderChangeEvent {
+function amendedPlayerSummary() {
   return {
-    ...validTenderChangeEventFixture,
-    changes: [
-      ...validTenderChangeEventFixture.changes,
-      {
-        kind: "corrigendum",
-        added: tenderWithCorrigendumFixture.corrigenda,
-        removed: [],
-        updated: [],
-      },
-    ],
+    schemaVersion: 1 as const,
+    playerId: amendedPlayerFixture.playerId,
+    sourceId: amendedPlayerFixture.sourceId,
+    playerName: amendedPlayerFixture.playerName,
+    team: amendedPlayerFixture.team,
+    position: amendedPlayerFixture.position,
+    shirtNumber: amendedPlayerFixture.shirtNumber,
+    season: amendedPlayerFixture.season,
+    stats: amendedPlayerFixture.stats,
+    observedAt: amendedPlayerFixture.observedAt,
+    latestSnapshot: {
+      snapshotId: "56f00f0d-f6f1-47a3-8693-1578423dc6b1",
+      version: 2,
+    },
   };
 }
 
-export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
+function teamListItem(index: number) {
+  const team = validTeamFixtures[index];
+  if (team === undefined) throw new Error("Missing team fixture");
+  return {
+    ...team,
+    latestSnapshot: {
+      snapshotId: validPlayerSnapshotFixture.snapshotId,
+      version: 1,
+    },
+  };
+}
+
+function standingListItem(index: number) {
+  const standing = validStandingFixtures[index];
+  if (standing === undefined) throw new Error("Missing standing fixture");
+  return {
+    ...standing,
+    latestSnapshot: {
+      snapshotId: validPlayerSnapshotFixture.snapshotId,
+      version: 1,
+    },
+  };
+}
+
+export class FixtureCardPulseDataClient implements CardPulseDataClient {
   private state: HealingState = "healthy";
   private amended = false;
   private forcedStale = false;
@@ -462,8 +495,13 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
       pagination: pagination(1),
       generatedAt: now,
     };
-    const tenderData = [demoTender(this.amended)];
-    const changeData = this.amended ? [amendmentEvent()] : [];
+
+    const playerData = [
+      this.amended ? amendedPlayerSummary() : validPlayerSummaryFixture,
+    ];
+    const teamData = [teamListItem(0)];
+    const standingData = [0, 1, 2].map(standingListItem);
+    const changeData = this.amended ? [validChangeEventFixture] : [];
     const quarantineData = hasIncident
       ? [
           {
@@ -472,8 +510,8 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
             issues: [
               {
                 code: "invalid_type",
-                path: ["title"],
-                message: "Required tender title was missing after layout drift",
+                path: ["stats", "goals"],
+                message: "Expected number, received string after layout drift",
               },
             ],
           },
@@ -481,7 +519,7 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
       : [];
     const healing: HealingStatus = {
       mode: "mock",
-      sourceId: validSourceHealthFixture.sourceId,
+      sourceId: demoSourceId,
       state: this.state,
       incident:
         this.state === "healthy"
@@ -493,7 +531,7 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
               openedAt: now,
               updatedAt: now,
               reason: "Source layout changed from table rows to cards",
-              prompt: "Refactor selectors for the new tender card layout.",
+              prompt: "Refactor selectors for the new record card layout.",
               previewCount: [
                 "awaiting_approval",
                 "preview_valid",
@@ -512,8 +550,11 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
 
     return {
       runtime: {
+        schemaVersion: 1,
+        service: "cardpulse-api",
+        domain: "football",
         mode: "mock",
-        sourceId: validSourceHealthFixture.sourceId,
+        sourceId: demoSourceId,
         collectorConfigured: false,
         targetConfigured: false,
         liveMutationsEnabled: false,
@@ -521,9 +562,19 @@ export class FixtureBidSentinelDataClient implements BidSentinelDataClient {
           "Deterministic fixture adapter selected; no Bright Data calls are made",
         ],
       },
-      tenders: {
-        data: tenderData,
-        pagination: pagination(tenderData.length),
+      players: {
+        data: playerData,
+        pagination: pagination(playerData.length),
+        generatedAt: now,
+      },
+      teams: {
+        data: teamData,
+        pagination: pagination(teamData.length),
+        generatedAt: now,
+      },
+      standings: {
+        data: standingData,
+        pagination: pagination(standingData.length),
         generatedAt: now,
       },
       changes: {

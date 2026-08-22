@@ -5,24 +5,50 @@ import {
   BrightDataCollectionProvider,
   BrightDataHealingProvider,
   MockBrightDataHealingProvider,
-  type TenderCollectionProvider,
+  type FootballCollectionBatch,
+  type FootballCollectionProvider,
 } from "@bidsentinel/brightdata";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import { CollectorIdSchema, type FootballRecord } from "@bidsentinel/contracts";
+import { validPlayerFixture } from "@bidsentinel/contracts/fixtures";
 import { hashPayload } from "@bidsentinel/validation";
 
 import {
   SelfHealingCoordinator,
   type RecoveryVerification,
 } from "./healing-coordinator.js";
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 
 export type RuntimeMode = "live" | "mock";
 
-export interface BidSentinelRuntime {
+/** Deterministic preview/baseline record used by mock-mode demo flows. */
+export function buildMockPreviewRecord(sourceId: string): FootballRecord {
+  const playerId = validPlayerFixture.playerId.replace(
+    /^openligadb:/,
+    `${sourceId}:`,
+  );
+  return {
+    ...structuredClone(validPlayerFixture),
+    sourceId,
+    playerId,
+    team: {
+      ...validPlayerFixture.team,
+      teamId: validPlayerFixture.team.teamId.replace(
+        /^openligadb:/,
+        `${sourceId}:`,
+      ),
+    },
+    sourceUrl: validPlayerFixture.sourceUrl.replace(
+      /^https:\/\/data\.football-demo\.test\/openligadb/,
+      `https://data.football-demo.test/${sourceId}`,
+    ),
+  };
+}
+
+export interface CardPulseRuntime {
   mode: RuntimeMode;
-  pipeline: BidSentinelPipeline;
+  pipeline: CardPulsePipeline;
   coordinator: SelfHealingCoordinator;
-  collectionProvider: TenderCollectionProvider | null;
+  collectionProvider: FootballCollectionProvider | null;
   sourceId: string;
   collectorId: string | null;
   targetUrl: string | null;
@@ -39,31 +65,54 @@ export interface CollectionRunSummary extends RecoveryVerification {
 
 export function createRuntimeFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-): BidSentinelRuntime {
+): CardPulseRuntime {
   const apiToken = env.BRIGHT_DATA_API_TOKEN?.trim() ?? "";
-  const collectorId = env.BRIGHT_DATA_COLLECTOR_ID?.trim() ?? "";
+  const rawCollectorId = env.BRIGHT_DATA_COLLECTOR_ID?.trim() ?? "";
   const targetUrl = env.BRIGHT_DATA_TARGET_URL?.trim() ?? "";
-  const sourceId = env.BIDSENTINEL_SOURCE_ID?.trim() || "iim-amritsar";
-  const liveMutationFlag =
-    env.BIDSENTINEL_ENABLE_LIVE_MUTATIONS?.trim().toLowerCase() === "true";
-  const operatorToken = env.BIDSENTINEL_OPERATOR_TOKEN?.trim() ?? "";
+  const sourceId =
+    env.CARDPULSE_SOURCE_ID?.trim() ||
+    env.BIDSENTINEL_SOURCE_ID?.trim() ||
+    "openligadb";
+  const liveMutationFlag = (
+    env.CARDPULSE_ENABLE_LIVE_MUTATIONS ??
+    env.BIDSENTINEL_ENABLE_LIVE_MUTATIONS ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  const operatorToken = (
+    env.CARDPULSE_OPERATOR_TOKEN ??
+    env.BIDSENTINEL_OPERATOR_TOKEN ??
+    ""
+  ).trim();
   const hasStrongOperatorToken = operatorToken.length >= 32;
   const operatorTokenHash = hasStrongOperatorToken
     ? createHash("sha256").update(operatorToken).digest("hex")
     : null;
+
+  // The collector ID is a first-class c_* value; a malformed ID is reported
+  // as a configuration issue instead of being forwarded to Bright Data.
+  const collectorIdParsed = CollectorIdSchema.safeParse(rawCollectorId);
+  const collectorId = collectorIdParsed.success ? rawCollectorId : "";
+
   const missing = [
     ["BRIGHT_DATA_API_TOKEN", apiToken],
-    ["BRIGHT_DATA_COLLECTOR_ID", collectorId],
+    ["BRIGHT_DATA_COLLECTOR_ID", rawCollectorId],
     ["BRIGHT_DATA_TARGET_URL", targetUrl],
   ]
     .filter(([, value]) => !value)
     .map(([name]) => `${name} is not configured`);
+  if (rawCollectorId !== "" && !collectorIdParsed.success) {
+    missing.push(
+      "BRIGHT_DATA_COLLECTOR_ID must be a first-class c_* collector ID",
+    );
+  }
 
-  const pipeline = new BidSentinelPipeline();
+  const pipeline = new CardPulsePipeline();
   if (missing.length > 0) {
-    const mockHealing = new MockBrightDataHealingProvider([
-      { ...validTenderFixture, sourceId },
-    ]);
+    // Deterministic mock mode: clearly labeled as mock, no live calls.
+    const mockPreview = buildMockPreviewRecord(sourceId);
+    const mockHealing = new MockBrightDataHealingProvider([mockPreview]);
     const coordinator = new SelfHealingCoordinator(mockHealing, {
       pollIntervalMs: 0,
     });
@@ -74,7 +123,7 @@ export function createRuntimeFromEnv(
       coordinator,
       collectionProvider: null,
       sourceId,
-      collectorId: null,
+      collectorId: collectorId === "" ? null : collectorId,
       targetUrl: null,
       configurationIssues: missing,
       liveMutationsEnabled: false,
@@ -98,20 +147,20 @@ export function createRuntimeFromEnv(
     collectorId,
     targetUrl,
     configurationIssues: [
-      ...(!liveMutationFlag
-        ? ["BIDSENTINEL_ENABLE_LIVE_MUTATIONS is not true"]
+      ...(liveMutationFlag !== "true"
+        ? ["CARDPULSE_ENABLE_LIVE_MUTATIONS is not true"]
         : []),
       ...(!hasStrongOperatorToken
-        ? ["BIDSENTINEL_OPERATOR_TOKEN must contain at least 32 characters"]
+        ? ["CARDPULSE_OPERATOR_TOKEN must contain at least 32 characters"]
         : []),
     ],
-    liveMutationsEnabled: liveMutationFlag && hasStrongOperatorToken,
+    liveMutationsEnabled: liveMutationFlag === "true" && hasStrongOperatorToken,
     operatorTokenHash,
   };
 }
 
 export function isAuthorizedOperatorToken(
-  runtime: BidSentinelRuntime,
+  runtime: CardPulseRuntime,
   suppliedToken: string | undefined,
 ): boolean {
   if (!runtime.liveMutationsEnabled || !runtime.operatorTokenHash) return false;
@@ -122,7 +171,7 @@ export function isAuthorizedOperatorToken(
 }
 
 export async function runConfiguredCollection(
-  runtime: BidSentinelRuntime,
+  runtime: CardPulseRuntime,
   options: { enableHealing?: boolean } = {},
 ): Promise<CollectionRunSummary> {
   if (
@@ -137,7 +186,7 @@ export async function runConfiguredCollection(
   }
 
   const observedAt = new Date().toISOString();
-  let batch;
+  let batch: FootballCollectionBatch;
   try {
     batch = await runtime.collectionProvider.collect({
       sourceId: runtime.sourceId,
@@ -165,6 +214,7 @@ export async function runConfiguredCollection(
     throw error;
   }
 
+  // Same-collector evidence: a batch from any other collector is refused.
   if (batch.collectorId !== runtime.collectorId) {
     throw new Error(
       "Bright Data collection returned an unexpected collector ID; refusing to process the batch",
@@ -189,17 +239,15 @@ export async function runConfiguredCollection(
     collectorId: batch.collectorId,
     outcomes: results.map((result) => result.outcome),
     success: accepted.length > 0 && quarantinedCount === 0,
-    validTenderCount: accepted.length,
+    validRecordCount: accepted.length,
     quarantinedCount,
-    sampleTenderIds: accepted
-      .map((result) =>
-        result.outcome === "accepted" ? result.tender.tenderId : "",
-      )
+    sampleEntityIds: accepted
+      .map((result) => (result.outcome === "accepted" ? result.entityId : ""))
       .filter(Boolean)
       .slice(0, 20),
     payloadHashes: accepted
       .map((result) =>
-        result.outcome === "accepted" ? hashPayload(result.tender) : "",
+        result.outcome === "accepted" ? hashPayload(result.record) : "",
       )
       .filter(Boolean)
       .slice(0, 20),

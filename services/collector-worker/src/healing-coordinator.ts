@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  FootballRecordSchema,
   RecoveryEvidenceSchema,
-  TenderSchema,
   type RecoveryEvidence,
 } from "@bidsentinel/contracts";
 import {
-  type TenderHealingProgress,
-  type TenderHealingProvider,
+  type FootballHealingProgress,
+  type FootballHealingProvider,
 } from "@bidsentinel/brightdata";
 
 export type HealingState =
@@ -37,15 +37,21 @@ export interface HealingIncident {
 
 export interface RecoveryVerification {
   success: boolean;
-  validTenderCount: number;
+  validRecordCount: number;
   quarantinedCount: number;
-  sampleTenderIds: string[];
+  sampleEntityIds: string[];
   payloadHashes: string[];
 }
 
 const RUNNING_STATUSES = new Set(["in_progress", "pending", "running"]);
 const FAILURE_STATUSES = new Set(["failed", "error", "cancelled"]);
 
+/**
+ * Preserved reliability gate around the provider-neutral Bright Data
+ * self-healing machinery. The same c_* collector is repaired, previews must
+ * pass the frozen football schema canary, and a human approves before the
+ * collector reruns.
+ */
 export class SelfHealingCoordinator {
   private readonly incidents = new Map<string, HealingIncident>();
   private readonly states = new Map<string, HealingState>();
@@ -55,7 +61,7 @@ export class SelfHealingCoordinator {
   private readonly approvalTimeoutMs: number;
 
   constructor(
-    private readonly healingProvider: TenderHealingProvider,
+    private readonly healingProvider: FootballHealingProvider,
     options: {
       sleepFn?: (delayMs: number) => Promise<void>;
       nowFn?: () => number;
@@ -122,9 +128,9 @@ export class SelfHealingCoordinator {
         observedAt,
         {
           success: false,
-          validTenderCount: 0,
+          validRecordCount: 0,
           quarantinedCount: 1,
-          sampleTenderIds: [],
+          sampleEntityIds: [],
           payloadHashes: [],
         },
         [
@@ -138,14 +144,14 @@ export class SelfHealingCoordinator {
   async pollProgress(
     sourceId: string,
     observedAt: string,
-  ): Promise<TenderHealingProgress> {
+  ): Promise<FootballHealingProgress> {
     const incident = this.requireIncident(sourceId);
     const state = this.getHealingState(sourceId);
     if (state !== "healing_requested" && state !== "approved") {
       throw new Error(`Cannot poll self-healing progress from state ${state}`);
     }
 
-    let progress: TenderHealingProgress;
+    let progress: FootballHealingProgress;
     try {
       progress = await this.healingProvider.pollRefactorProgress(
         incident.collectorId,
@@ -182,7 +188,7 @@ export class SelfHealingCoordinator {
     const allValid =
       previewPayloads.length > 0 &&
       previewPayloads.every((payload) => {
-        const parsed = TenderSchema.safeParse(payload);
+        const parsed = FootballRecordSchema.safeParse(payload);
         return parsed.success && parsed.data.sourceId === sourceId;
       });
     const valid = hasEnoughResults && allValid;
@@ -240,9 +246,9 @@ export class SelfHealingCoordinator {
         observedAt,
         {
           success: false,
-          validTenderCount: 0,
+          validRecordCount: 0,
           quarantinedCount: 1,
-          sampleTenderIds: [],
+          sampleEntityIds: [],
           payloadHashes: [],
         },
         ["Human rejected the proposed self-healing change"],
@@ -266,16 +272,16 @@ export class SelfHealingCoordinator {
             observedAt,
             {
               success: false,
-              validTenderCount: 0,
+              validRecordCount: 0,
               quarantinedCount: 1,
-              sampleTenderIds: [],
+              sampleEntityIds: [],
               payloadHashes: [],
             },
             ["Approved collector rerun failed before verification completed"],
           );
           throw error;
         }
-        if (!verification.success || verification.validTenderCount < 1) {
+        if (!verification.success || verification.validRecordCount < 1) {
           this.transition(incident, "recovery_failed", observedAt);
           incident.evidence = this.buildEvidence(
             incident,
@@ -295,7 +301,7 @@ export class SelfHealingCoordinator {
           observedAt,
           verification,
           [
-            "Confirmed structural drift and preserved the last verified snapshot",
+            "Confirmed structural drift and preserved the last verified card",
             "Validated the Bright Data self-healing preview",
             "Human approved the proposed change",
             `Bright Data completed the heal for the same collector ${incident.collectorId}`,
@@ -319,9 +325,9 @@ export class SelfHealingCoordinator {
       observedAt,
       {
         success: false,
-        validTenderCount: 0,
+        validRecordCount: 0,
         quarantinedCount: 1,
-        sampleTenderIds: [],
+        sampleEntityIds: [],
         payloadHashes: [],
       },
       ["Timed out waiting for Bright Data to complete the approved heal"],
@@ -343,7 +349,7 @@ export class SelfHealingCoordinator {
 
   private applyProgress(
     incident: HealingIncident,
-    progress: TenderHealingProgress,
+    progress: FootballHealingProgress,
     observedAt: string,
     afterApproval: boolean,
   ): void {
@@ -403,9 +409,9 @@ export class SelfHealingCoordinator {
       observedAt,
       {
         success: false,
-        validTenderCount: 0,
+        validRecordCount: 0,
         quarantinedCount: 1,
-        sampleTenderIds: [],
+        sampleEntityIds: [],
         payloadHashes: [],
       },
       [action],
@@ -440,9 +446,9 @@ export class SelfHealingCoordinator {
       outcome,
       actions,
       verification: {
-        validTenderCount: verification.validTenderCount,
+        validRecordCount: verification.validRecordCount,
         quarantinedCount: verification.quarantinedCount,
-        sampleTenderIds: verification.sampleTenderIds.slice(0, 20),
+        sampleEntityIds: verification.sampleEntityIds.slice(0, 20),
         payloadHashes: verification.payloadHashes.slice(0, 20),
       },
     });

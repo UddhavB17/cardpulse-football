@@ -3,29 +3,39 @@ import { describe, expect, it, vi } from "vitest";
 import { MockBrightDataHealingProvider } from "@bidsentinel/brightdata";
 
 import {
-  tenderWithCorrigendumFixture,
-  validTenderFixture,
+  amendedPlayerFixture,
+  demoRecordsFor,
+  validPlayerFixture,
 } from "@bidsentinel/contracts/fixtures";
 
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
 
 const context = {
-  sourceId: "gem",
+  sourceId: "openligadb",
   extractorVersion: "fixture-v1",
-  observedAt: validTenderFixture.observedAt,
+  observedAt: validPlayerFixture.observedAt,
 };
 
-describe("BidSentinelPipeline", () => {
-  it("creates immutable state versions and suppresses duplicate observations", () => {
-    const pipeline = new BidSentinelPipeline();
-    const first = pipeline.process(validTenderFixture, context);
+function playerRow(index: number) {
+  return {
+    ...validPlayerFixture,
+    playerId: `openligadb:player:row-${index}`,
+    externalId: `player-row-${index}`,
+    sourceUrl: `https://data.football-demo.test/openligadb/players/row-${index}`,
+  };
+}
+
+describe("CardPulsePipeline", () => {
+  it("creates immutable card versions and suppresses duplicate observations", () => {
+    const pipeline = new CardPulsePipeline();
+    const first = pipeline.process(validPlayerFixture, context);
     const duplicate = pipeline.process(
       {
-        ...validTenderFixture,
-        observedAt: "2026-08-20T05:10:00.000Z",
+        ...validPlayerFixture,
+        observedAt: "2026-08-20T14:10:00.000Z",
       },
-      { ...context, observedAt: "2026-08-20T05:10:00.000Z" },
+      { ...context, observedAt: "2026-08-20T14:10:00.000Z" },
     );
 
     expect(first.outcome).toBe("accepted");
@@ -34,40 +44,45 @@ describe("BidSentinelPipeline", () => {
       expect(first.snapshot?.version).toBe(1);
       expect(duplicate.snapshot).toBeNull();
     }
-    expect(pipeline.snapshots.list(validTenderFixture.tenderId)).toHaveLength(
+    expect(pipeline.snapshots.list(validPlayerFixture.playerId)).toHaveLength(
       1,
     );
   });
 
-  it("detects deadline, status, and corrigendum changes", () => {
-    const pipeline = new BidSentinelPipeline();
-    pipeline.process(validTenderFixture, context);
-    const changed = pipeline.process(
-      { ...tenderWithCorrigendumFixture, status: "closed" },
-      {
-        ...context,
-        observedAt: tenderWithCorrigendumFixture.observedAt,
-      },
-    );
+  it("detects amended stats as living-card changes", () => {
+    const pipeline = new CardPulsePipeline();
+    pipeline.process(validPlayerFixture, context);
+    const changed = pipeline.process(amendedPlayerFixture, {
+      ...context,
+      observedAt: amendedPlayerFixture.observedAt,
+    });
 
     expect(changed.outcome).toBe("accepted");
     if (changed.outcome === "accepted") {
       expect(changed.snapshot?.version).toBe(2);
       expect(changed.changeEvent?.changes.map((change) => change.kind)).toEqual(
-        ["status", "deadline", "corrigendum"],
+        ["appearances", "goals", "minutes"],
       );
+      expect(changed.changeEvent?.changes).toMatchObject([
+        { kind: "appearances", before: 33, after: 34 },
+        { kind: "goals", before: 18, after: 21 },
+        { kind: "minutes", before: 2820, after: 2910 },
+      ]);
     }
   });
 
   it("quarantines invalid extraction and records verified recovery", () => {
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     const invalid = pipeline.process(
-      { ...validTenderFixture, submissionDeadline: "tomorrow" },
+      {
+        ...validPlayerFixture,
+        stats: { ...validPlayerFixture.stats, goals: "eighteen" },
+      },
       context,
     );
-    const recoveryTime = "2026-08-20T05:10:00.000Z";
+    const recoveryTime = "2026-08-20T14:10:00.000Z";
     const recovered = pipeline.process(
-      { ...validTenderFixture, observedAt: recoveryTime },
+      { ...validPlayerFixture, observedAt: recoveryTime },
       { ...context, observedAt: recoveryTime },
     );
 
@@ -75,82 +90,80 @@ describe("BidSentinelPipeline", () => {
     if (invalid.outcome === "quarantined") {
       expect(invalid.health.state).toBe("quarantined");
     }
-    expect(pipeline.quarantines.listBySource("gem")).toHaveLength(1);
+    expect(pipeline.quarantines.listBySource("openligadb")).toHaveLength(1);
 
     expect(recovered.outcome).toBe("accepted");
     if (recovered.outcome === "accepted") {
       expect(recovered.health.state).toBe("healthy");
       expect(recovered.recoveryEvidence?.outcome).toBe("recovered");
       expect(recovered.recoveryEvidence?.verification).toMatchObject({
-        validTenderCount: 1,
+        validRecordCount: 1,
         quarantinedCount: 1,
-        sampleTenderIds: [validTenderFixture.tenderId],
+        sampleEntityIds: [validPlayerFixture.playerId],
       });
     }
-    expect(pipeline.recoveryEvidence.listBySource("gem")).toHaveLength(1);
-  });
-
-  it("rejects semantically invalid snapshots without replacing the baseline", () => {
-    const pipeline = new BidSentinelPipeline();
-    pipeline.process(validTenderFixture, context);
-    const originalDocument = validTenderFixture.documents[0];
-    if (originalDocument === undefined) {
-      throw new Error("Fixture must include a document");
-    }
-
-    const duplicate = pipeline.process(
-      {
-        ...validTenderFixture,
-        observedAt: "2026-08-21T05:00:00.000Z",
-        documents: [originalDocument, { ...originalDocument }],
-      },
-      { ...context, observedAt: "2026-08-21T05:00:00.000Z" },
-    );
-    const regressed = pipeline.process(
-      {
-        ...validTenderFixture,
-        status: "closed",
-        observedAt: "2026-08-19T05:00:00.000Z",
-      },
-      { ...context, observedAt: "2026-08-19T05:00:00.000Z" },
-    );
-
-    expect(duplicate.outcome).toBe("quarantined");
-    expect(regressed.outcome).toBe("quarantined");
-    expect(pipeline.snapshots.list(validTenderFixture.tenderId)).toHaveLength(
+    expect(pipeline.recoveryEvidence.listBySource("openligadb")).toHaveLength(
       1,
     );
-    expect(
-      pipeline.snapshots.latest(validTenderFixture.tenderId)?.tender.status,
-    ).toBe("open");
   });
 
-  it("keeps stored snapshots isolated from returned mutable objects", () => {
-    const pipeline = new BidSentinelPipeline();
-    const accepted = pipeline.process(validTenderFixture, context);
+  it("rejects semantically regressed snapshots without replacing the verified card", () => {
+    const pipeline = new CardPulsePipeline();
+    pipeline.process(validPlayerFixture, context);
+
+    const regressed = pipeline.process(
+      {
+        ...validPlayerFixture,
+        stats: { ...validPlayerFixture.stats, goals: 2 },
+        observedAt: "2026-08-19T14:00:00.000Z",
+      },
+      { ...context, observedAt: "2026-08-19T14:00:00.000Z" },
+    );
+
+    expect(regressed.outcome).toBe("quarantined");
+    expect(pipeline.snapshots.list(validPlayerFixture.playerId)).toHaveLength(
+      1,
+    );
+    const stored = pipeline.snapshots.latest(validPlayerFixture.playerId);
+    expect(stored?.record.entityType).toBe("player");
+    if (stored?.record.entityType === "player") {
+      expect(stored.record.stats.goals).toBe(18);
+    }
+  });
+
+  it("keeps stored cards isolated from returned mutable objects", () => {
+    const pipeline = new CardPulsePipeline();
+    const accepted = pipeline.process(validPlayerFixture, context);
     if (accepted.outcome !== "accepted" || accepted.snapshot === null) {
       throw new Error("Fixture must produce a snapshot");
     }
 
-    accepted.snapshot.tender.status = "closed";
+    if (accepted.snapshot.record.entityType === "player") {
+      accepted.snapshot.record.stats.goals = 0;
+    }
     accepted.health.state = "quarantined";
-    const readCopy = pipeline.snapshots.latest(validTenderFixture.tenderId);
+    const readCopy = pipeline.snapshots.latest(validPlayerFixture.playerId);
     if (readCopy === null) {
       throw new Error("Expected stored snapshot");
     }
-    readCopy.tender.status = "cancelled";
+    if (readCopy.record.entityType === "player") {
+      readCopy.record.stats.goals = 99;
+    }
 
-    expect(
-      pipeline.snapshots.latest(validTenderFixture.tenderId)?.tender.status,
-    ).toBe("open");
-    expect(pipeline.sourceHealth.get("gem")?.state).toBe("healthy");
+    const storedAfterMutation = pipeline.snapshots.latest(
+      validPlayerFixture.playerId,
+    );
+    if (storedAfterMutation?.record.entityType === "player") {
+      expect(storedAfterMutation.record.stats.goals).toBe(18);
+    }
+    expect(pipeline.sourceHealth.get("openligadb")?.state).toBe("healthy");
   });
 
   it("classifies structural extraction failure as schema drift", () => {
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     const invalidShape: Record<string, unknown> =
-      structuredClone(validTenderFixture);
-    Reflect.deleteProperty(invalidShape, "title");
+      structuredClone(validPlayerFixture);
+    Reflect.deleteProperty(invalidShape, "playerName");
 
     const result = pipeline.process(invalidShape, context);
 
@@ -160,20 +173,20 @@ describe("BidSentinelPipeline", () => {
     }
   });
 
-  it("quarantines one malformed row in a 100-row batch without healing", async () => {
+  it("quarantines one malformed row in a large batch without healing", async () => {
     const provider = new MockBrightDataHealingProvider();
     const trigger = vi.spyOn(provider, "triggerRefactor");
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = new SelfHealingCoordinator(provider);
-    const validRows = Array.from({ length: 99 }, (_, index) => ({
-      ...validTenderFixture,
-      tenderId: `gem:valid-${index}`,
-      externalId: `valid-${index}`,
-      url: `https://example.gov.test/tenders/valid-${index}`,
-    }));
+    const validRows = Array.from({ length: 99 }, (_, index) =>
+      playerRow(index),
+    );
 
     const results = await pipeline.processBatchWithHealing(
-      [...validRows, { tenderId: "gem:broken", externalId: "broken" }],
+      [
+        ...validRows,
+        { entityType: "player", playerId: "openligadb:player:broken" },
+      ],
       { ...context, collectorId: "c_batch_safe" },
     );
 
@@ -189,7 +202,7 @@ describe("BidSentinelPipeline", () => {
   it("does not heal a first-ever empty batch without a verified baseline", async () => {
     const provider = new MockBrightDataHealingProvider();
     const trigger = vi.spyOn(provider, "triggerRefactor");
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = new SelfHealingCoordinator(provider);
 
     const results = await pipeline.processBatchWithHealing([], {
@@ -198,21 +211,16 @@ describe("BidSentinelPipeline", () => {
     });
 
     expect(results).toEqual([]);
-    expect(pipeline.quarantines.listBySource("gem")).toEqual([]);
+    expect(pipeline.quarantines.listBySource("openligadb")).toEqual([]);
     expect(trigger).not.toHaveBeenCalled();
   });
 
   it("heals a count collapse only after a verified batch baseline", async () => {
     const provider = new MockBrightDataHealingProvider();
     const trigger = vi.spyOn(provider, "triggerRefactor");
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = new SelfHealingCoordinator(provider);
-    const baseline = Array.from({ length: 4 }, (_, index) => ({
-      ...validTenderFixture,
-      tenderId: `gem:baseline-${index}`,
-      externalId: `baseline-${index}`,
-      url: `https://example.gov.test/tenders/baseline-${index}`,
-    }));
+    const baseline = Array.from({ length: 4 }, (_, index) => playerRow(index));
     const batchContext = { ...context, collectorId: "c_collapse" };
 
     await pipeline.processBatchWithHealing(baseline, batchContext);
@@ -231,11 +239,17 @@ describe("BidSentinelPipeline", () => {
   it("heals the same majority structural signature repeated across two runs", async () => {
     const provider = new MockBrightDataHealingProvider();
     const trigger = vi.spyOn(provider, "triggerRefactor");
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = new SelfHealingCoordinator(provider);
     const broken = [
-      { tenderId: "gem:broken-1", externalId: "broken-1" },
-      { tenderId: "gem:broken-2", externalId: "broken-2" },
+      {
+        entityType: "player",
+        playerId: "openligadb:player:broken-1",
+      },
+      {
+        entityType: "player",
+        playerId: "openligadb:player:broken-2",
+      },
     ];
     const batchContext = { ...context, collectorId: "c_repeat" };
 
@@ -248,5 +262,21 @@ describe("BidSentinelPipeline", () => {
       "c_repeat",
       expect.stringContaining("Confirmed batch-level layout drift"),
     );
+  });
+
+  it("processes the full deterministic demo batch without drift", async () => {
+    const provider = new MockBrightDataHealingProvider();
+    const trigger = vi.spyOn(provider, "triggerRefactor");
+    const pipeline = new CardPulsePipeline();
+
+    const results = await pipeline.processBatchWithHealing(
+      demoRecordsFor("valid"),
+      { ...context, collectorId: "c_demo_seed" },
+    );
+
+    expect(results.every((result) => result.outcome === "accepted")).toBe(true);
+    expect(results).toHaveLength(9);
+    expect(trigger).not.toHaveBeenCalled();
+    expect(pipeline.snapshots.listUniqueEntityIds()).toHaveLength(9);
   });
 });

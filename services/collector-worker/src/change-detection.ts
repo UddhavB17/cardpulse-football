@@ -1,76 +1,218 @@
 import { randomUUID } from "node:crypto";
 
 import {
-  TenderChangeEventSchema,
-  type Corrigendum,
-  type TenderChange,
-  type TenderChangeEvent,
-  type TenderSnapshot,
+  FootballChangeEventSchema,
+  type FootballChangeEvent,
+  type FootballSnapshot,
+  type StatChange,
 } from "@bidsentinel/contracts";
-import { stableStringify } from "@bidsentinel/validation";
+import { changedScalarFields } from "./record-fields.js";
 
-function indexCorrigenda(items: Corrigendum[]): Map<string, Corrigendum> {
-  return new Map(items.map((item) => [item.id, item]));
+type Scalar = string | number | null;
+
+const STANDING_FIELD_NAMES = new Set([
+  "rank",
+  "points",
+  "played",
+  "won",
+  "drawn",
+  "lost",
+  "goalsFor",
+  "goalsAgainst",
+  "teamName",
+]);
+
+const PROFILE_FIELD_NAMES = new Set([
+  "playerName",
+  "team",
+  "position",
+  "shirtNumber",
+  "nationality",
+  "name",
+  "shortName",
+  "country",
+  "city",
+  "stadium",
+  "founded",
+  "coach",
+]);
+
+const NUMERIC_STAT_FIELDS = new Set([
+  "stats.goals",
+  "stats.assists",
+  "stats.appearances",
+  "stats.minutesPlayed",
+]);
+
+function numericStatKind(
+  field: string,
+): "goals" | "assists" | "appearances" | "minutes" {
+  switch (field) {
+    case "stats.goals":
+      return "goals";
+    case "stats.assists":
+      return "assists";
+    case "stats.appearances":
+      return "appearances";
+    default:
+      return "minutes";
+  }
 }
 
-export function detectTenderChanges(
-  previous: TenderSnapshot,
-  current: TenderSnapshot,
+function statChangeFor(
+  field: string,
+  before: Scalar,
+  after: Scalar,
+): StatChange | null {
+  if (NUMERIC_STAT_FIELDS.has(field)) {
+    if (typeof before === "number" && typeof after === "number") {
+      return { kind: numericStatKind(field), before, after };
+    }
+    return null;
+  }
+
+  if (STANDING_FIELD_NAMES.has(field)) {
+    return {
+      kind: "standing",
+      field: field as Extract<
+        Extract<StatChange, { kind: "standing" }>["field"],
+        string
+      >,
+      before,
+      after,
+    };
+  }
+
+  if (PROFILE_FIELD_NAMES.has(field)) {
+    return {
+      kind: "profile",
+      field: field as Extract<
+        Extract<StatChange, { kind: "profile" }>["field"],
+        string
+      >,
+      before,
+      after,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Produces the human-facing change record between two verified snapshots of
+ * the same entity. Returns null when the semantic state is unchanged.
+ */
+export function detectRecordChanges(
+  previous: FootballSnapshot,
+  current: FootballSnapshot,
   detectedAt: string,
   changeEventId = randomUUID(),
-): TenderChangeEvent | null {
-  const changes: TenderChange[] = [];
-
-  if (previous.tender.status !== current.tender.status) {
-    changes.push({
-      kind: "status",
-      before: previous.tender.status,
-      after: current.tender.status,
-    });
+): FootballChangeEvent | null {
+  if (previous.record.entityType !== "player") {
+    return detectNonPlayerChanges(previous, current, detectedAt, changeEventId);
+  }
+  if (current.record.entityType !== "player") {
+    return null;
   }
 
-  if (
-    previous.tender.submissionDeadline !== current.tender.submissionDeadline
-  ) {
-    changes.push({
-      kind: "deadline",
-      before: previous.tender.submissionDeadline,
-      after: current.tender.submissionDeadline,
-    });
-  }
-
-  const previousCorrigenda = indexCorrigenda(previous.tender.corrigenda);
-  const currentCorrigenda = indexCorrigenda(current.tender.corrigenda);
-  const added = current.tender.corrigenda.filter(
-    (item) => !previousCorrigenda.has(item.id),
-  );
-  const removed = previous.tender.corrigenda.filter(
-    (item) => !currentCorrigenda.has(item.id),
-  );
-  const updated = current.tender.corrigenda.flatMap((currentItem) => {
-    const previousItem = previousCorrigenda.get(currentItem.id);
+  const changes: StatChange[] = [];
+  for (const difference of changedScalarFields(
+    previous.record,
+    current.record,
+  )) {
     if (
-      previousItem === undefined ||
-      stableStringify(previousItem) === stableStringify(currentItem)
+      difference.field === "stats.yellowCards" ||
+      difference.field === "stats.redCards"
     ) {
-      return [];
+      continue;
     }
+    const change = statChangeFor(
+      difference.field,
+      difference.before,
+      difference.after,
+    );
+    if (change !== null) {
+      changes.push(change);
+    }
+  }
 
-    return [{ before: previousItem, after: currentItem }];
-  });
-
-  if (added.length > 0 || removed.length > 0 || updated.length > 0) {
-    changes.push({ kind: "corrigendum", added, removed, updated });
+  const yellowBefore = previous.record.stats.yellowCards;
+  const yellowAfter = current.record.stats.yellowCards;
+  const redBefore = previous.record.stats.redCards;
+  const redAfter = current.record.stats.redCards;
+  if (yellowBefore !== yellowAfter || redBefore !== redAfter) {
+    changes.push({
+      kind: "discipline",
+      yellowBefore,
+      yellowAfter,
+      redBefore,
+      redAfter,
+    });
   }
 
   if (changes.length === 0) {
     return null;
   }
 
-  return TenderChangeEventSchema.parse({
+  return buildChangeEvent(
+    previous,
+    current,
+    detectedAt,
+    changeEventId,
+    changes,
+  );
+}
+
+function detectNonPlayerChanges(
+  previous: FootballSnapshot,
+  current: FootballSnapshot,
+  detectedAt: string,
+  changeEventId: string,
+): FootballChangeEvent | null {
+  if (previous.record.entityType !== current.record.entityType) {
+    return null;
+  }
+
+  const changes: StatChange[] = [];
+  for (const difference of changedScalarFields(
+    previous.record,
+    current.record,
+  )) {
+    const change = statChangeFor(
+      difference.field,
+      difference.before,
+      difference.after,
+    );
+    if (change !== null) {
+      changes.push(change);
+    }
+  }
+
+  if (changes.length === 0) {
+    return null;
+  }
+
+  return buildChangeEvent(
+    previous,
+    current,
+    detectedAt,
+    changeEventId,
+    changes,
+  );
+}
+
+function buildChangeEvent(
+  previous: FootballSnapshot,
+  current: FootballSnapshot,
+  detectedAt: string,
+  changeEventId: string,
+  changes: StatChange[],
+): FootballChangeEvent {
+  return FootballChangeEventSchema.parse({
     schemaVersion: 1,
     changeEventId,
-    tenderId: current.tenderId,
+    entityId: current.entityId,
+    entityType: current.entityType,
     sourceId: current.sourceId,
     fromSnapshotId: previous.snapshotId,
     toSnapshotId: current.snapshotId,
