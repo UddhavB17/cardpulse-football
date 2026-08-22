@@ -2,27 +2,29 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   validChangeEventListResponseFixture,
+  validPlayerListResponseFixture,
   validQuarantineListResponseFixture,
   validSourceHealthListResponseFixture,
-  validTenderListResponseFixture,
+  validStandingsListResponseFixture,
+  validTeamListResponseFixture,
 } from "@bidsentinel/contracts/fixtures";
 
 import {
-  FixtureBidSentinelDataClient,
-  HttpBidSentinelDataClient,
+  FixtureCardPulseDataClient,
+  HttpCardPulseDataClient,
   isGeneratedDataStale,
 } from "./data-client";
 
 describe("fixture dashboard adapter", () => {
   it("runs the deterministic recovery flow before emitting an amendment", async () => {
-    const client = new FixtureBidSentinelDataClient();
+    const client = new FixtureCardPulseDataClient();
 
     expect((await client.load()).healing.state).toBe("healthy");
     await client.collect("drift");
-    let snapshot = await client.load();
+    const snapshot = await client.load();
     expect(snapshot.healing.state).toBe("healing_requested");
     expect(snapshot.quarantines.data).toHaveLength(1);
-    expect(snapshot.tenders.data[0]?.latestSnapshot.version).toBe(1);
+    expect(snapshot.players.data[0]?.latestSnapshot.version).toBe(1);
 
     await client.progressHealing();
     expect((await client.load()).healing.state).toBe("awaiting_approval");
@@ -32,14 +34,28 @@ describe("fixture dashboard adapter", () => {
     expect((await client.load()).healing.state).toBe("recovered");
 
     await client.collect("amended");
-    snapshot = await client.load();
-    expect(snapshot.changes.data).toHaveLength(1);
-    expect(snapshot.tenders.data[0]?.latestSnapshot.version).toBe(2);
-    expect(snapshot.tenders.data[0]?.corrigendumCount).toBe(1);
+    const amended = await client.load();
+    expect(amended.changes.data).toHaveLength(1);
+    expect(amended.players.data[0]?.latestSnapshot.version).toBe(2);
+    // The tracked striker's goal tally moved with the verified rerun.
+    expect(amended.players.data[0]?.stats.goals).toBe(21);
+  });
+
+  it("serves teams and standings lists alongside players", async () => {
+    const snapshot = await new FixtureCardPulseDataClient().load();
+
+    expect(snapshot.teams.data[0]?.name).toContain("Rheinland");
+    expect(snapshot.standings.data.length).toBeGreaterThanOrEqual(3);
+    const leader = [...snapshot.standings.data].sort(
+      (a, b) => a.rank - b.rank,
+    )[0];
+    if (leader === undefined) throw new Error("Missing standings fixture");
+    // Standings arithmetic is enforced by the frozen contract.
+    expect(leader.points).toBe(leader.won * 3 + leader.drawn);
   });
 
   it("exposes safe preview failure, recovery failure, stale and unavailable states", async () => {
-    const client = new FixtureBidSentinelDataClient();
+    const client = new FixtureCardPulseDataClient();
 
     client.setInspectionScenario("preview_invalid");
     expect((await client.load()).healing.state).toBe("preview_invalid");
@@ -53,26 +69,32 @@ describe("fixture dashboard adapter", () => {
 });
 
 describe("HTTP dashboard adapter", () => {
-  it("loads and contract-validates the API views", async () => {
+  it("loads and contract-validates every API view", async () => {
     const responses: Record<string, unknown> = {
       "/api/runtime": {
         data: {
+          schemaVersion: 1,
+          service: "cardpulse-api",
+          domain: "football",
           mode: "mock",
-          sourceId: "gem",
+          sourceId: "openligadb",
           collectorConfigured: false,
           targetConfigured: false,
           liveMutationsEnabled: false,
           configurationIssues: [],
         },
+        generatedAt: "2026-08-21T14:15:00.000Z",
       },
-      "/api/tenders": validTenderListResponseFixture,
+      "/api/players": validPlayerListResponseFixture,
+      "/api/teams": validTeamListResponseFixture,
+      "/api/standings": validStandingsListResponseFixture,
       "/api/changes": validChangeEventListResponseFixture,
       "/api/sources": validSourceHealthListResponseFixture,
       "/api/quarantines": validQuarantineListResponseFixture,
-      "/api/healing/gem": {
+      "/api/healing/openligadb": {
         data: {
           mode: "mock",
-          sourceId: "gem",
+          sourceId: "openligadb",
           state: "recovered",
           incident: null,
         },
@@ -85,16 +107,35 @@ describe("HTTP dashboard adapter", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    const client = new HttpBidSentinelDataClient(
+    const client = new HttpCardPulseDataClient(
       "http://test.local",
       fetchFn as typeof fetch,
     );
 
     const snapshot = await client.load();
     expect(snapshot.runtime.mode).toBe("mock");
-    expect(snapshot.tenders.data).toHaveLength(1);
+    expect(snapshot.players.data).toHaveLength(1);
     expect(snapshot.healing.state).toBe("recovered");
-    expect(fetchFn).toHaveBeenCalledTimes(6);
+    expect(fetchFn).toHaveBeenCalledTimes(8);
+  });
+
+  it("rejects payloads that violate the frozen runtime contract", async () => {
+    const fetchFn = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: { mode: "sometimes" },
+            generatedAt: "2026-08-21T14:15:00.000Z",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const client = new HttpCardPulseDataClient(
+      "http://test.local",
+      fetchFn as typeof fetch,
+    );
+
+    await expect(client.load()).rejects.toBeTruthy();
   });
 
   it("sends the operator token only on a mutation request", async () => {
@@ -105,7 +146,7 @@ describe("HTTP dashboard adapter", () => {
           headers: { "content-type": "application/json" },
         }),
     );
-    const client = new HttpBidSentinelDataClient(
+    const client = new HttpCardPulseDataClient(
       "http://test.local",
       fetchFn as typeof fetch,
     );
@@ -117,7 +158,7 @@ describe("HTTP dashboard adapter", () => {
     >;
     const [, init] = calls[0] ?? [];
     expect(init?.headers).toMatchObject({
-      "x-bidsentinel-operator-token": "secret-operator-token",
+      "x-cardpulse-operator-token": "secret-operator-token",
     });
     expect(init?.body).toBe('{"approve":true}');
   });
