@@ -1,132 +1,173 @@
-# BidSentinel
+# CardPulse Football
 
-BidSentinel is a self-healing tender monitor. It runs a Bright Data Scraper
-Studio collector, validates every extraction, protects the last verified
-snapshot when a page layout breaks, requests a same-collector repair, and
-requires a schema-valid preview plus human approval before saving the repair.
-After the repaired collector reruns, real deadline, status, and corrigendum
-changes are emitted as evidence-backed events.
+CardPulse turns scraped football statistics into animated, game-style player
+cards — and keeps the data trustworthy when the source page changes shape.
 
-The default local experience is an explicitly labelled deterministic mock. Live
-mode is selected only when all three Bright Data values are configured; live
-collection and healing mutations additionally require an operator flag and a
-private token. State is intentionally in memory for the hackathon MVP.
+The demo intentionally combines a high-impact visual reveal with a reliability
+story that is central to scraping: collect public football rows, validate every
+record, preserve the last verified card during layout drift, repair the **same**
+Bright Data Scraper Studio collector, require a valid preview and human
+approval, rerun it, and show evidence of recovery.
 
-## Requirements
+The default local experience is a deterministic, clearly labelled mock. A live
+Bright Data path is implemented but is not claimed as proven until a
+credentialed run has been captured.
 
-- Node.js 22 or newer
-- pnpm 11 (Corepack is fine)
+## Why this is not just another stats dashboard
 
-## Install and verify
+Sports pages change continuously. CSS classes move, tables become cards, and
+A/B tests quietly break selectors. A conventional dashboard either crashes or
+serves stale numbers. CardPulse makes that failure visible and recoverable:
+
+- strict Zod contracts for player, team, and standing records;
+- SHA-256 payload evidence and immutable versioned snapshots;
+- quarantine instead of letting malformed rows corrupt the card;
+- batch-level drift confirmation, so one bad row cannot trigger a repair;
+- last-known-good preservation while the scraper is broken;
+- same-`c_*` collector refactor, preview validation, approval, terminal polling,
+  rerun, and recovery ledger;
+- deterministic semantic events for goals, assists, appearances, discipline,
+  profiles, and league-table changes.
+
+Remove scraping and the collection, drift, healing, provenance, and recovery
+story disappears. The animated card is the payoff; reliable scraping is the
+product.
+
+## Judge-facing experience
+
+The web app uses an original comic-print visual system: halftone texture,
+chromatic separation, angular wipes, card tilt, and a controlled glitch while
+the source is compromised. It does not bundle player photos, club crests,
+league marks, or Spider-Verse assets. Reduced-motion and keyboard-friendly
+paths are included.
+
+The main flow is:
+
+1. **Generate card** — collect a verified football batch and materialize the
+   player card, team summaries, and standings.
+2. **Inject layout drift** — simulate table-to-cards DOM drift; bad output is
+   quarantined and the verified card remains on screen.
+3. **Fetch the repair preview** — the confirmed drift has already triggered
+   refactoring for the same collector ID; now retrieve its approval preview.
+4. **Validate preview** — reject approval unless every preview row passes the
+   frozen contract and count gate.
+5. **Approve repair** — resume, poll to `done`, rerun the same collector, and
+   archive hashes/counts as recovery evidence.
+6. **Show a real stat amendment** — prove that DOM drift and business-data
+   change are treated differently.
+
+## Architecture
+
+| Workspace                   | Responsibility                                                                      |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `apps/web`                  | Card generator, reliability timeline, team views, standings, operator actions       |
+| `apps/chaos-source`         | Stable `/players` HTML target with table, cards, amendment, and unavailable modes   |
+| `services/collector-worker` | API, validation pipeline, snapshots, diffing, quarantine, healing orchestration     |
+| `packages/contracts`        | Canonical Zod schemas and deterministic football fixtures                           |
+| `packages/validation`       | Stable serialization, hashing, and extraction validation                            |
+| `packages/brightdata`       | Scraper Studio trigger/poll adapter, row mapper, and same-collector healing adapter |
+
+Workspace package names still use the historical `@bidsentinel` scope to keep
+the migration reviewable; all product-facing names and runtime contracts are
+CardPulse Football.
+
+## Run locally
+
+Requirements: Node 22+ and pnpm 11.
 
 ```bash
 pnpm install
+```
+
+Start these in separate terminals:
+
+```bash
+pnpm dev:chaos-source
+pnpm start:api
+pnpm dev:web
+```
+
+Open `http://127.0.0.1:4173`. With no credentials, the dashboard and API both
+say `mock`; no external request or billable mutation is made.
+
+Useful endpoints:
+
+- chaos source: `http://127.0.0.1:4311/players`
+- chaos controls: `http://127.0.0.1:4311/__control`
+- API: `http://127.0.0.1:4321`
+- web: `http://127.0.0.1:4173`
+
+See [the demo runbook](docs/demo-runbook.md) for the one-minute presentation
+and [local development](docs/local-development.md) for live-mode setup.
+
+## Bright Data integration
+
+The collection adapter follows the Scraper Studio flow:
+
+1. `POST /dca/trigger?collector=c_*&queue_next=1` with `[{ "url": "…" }]`;
+2. capture the returned `collection_id`;
+3. poll `GET /dca/dataset?id=…` until a row array is returned;
+4. map rows into football contracts and validate them independently.
+
+The healing adapter sends `{ prompt, custom_input: [] }` to
+`refactor_template`, preserves structured `preview_result`, resumes through
+`resume_automation_job` only after a valid preview plus human approval, polls
+to terminal `done`, and reruns the same first-class `c_*` ID.
+
+Live mode requires all three `BRIGHT_DATA_*` variables. Billable/mutating API
+routes additionally require `CARDPULSE_ENABLE_LIVE_MUTATIONS=true` and a
+private 32+ character `CARDPULSE_OPERATOR_TOKEN` supplied as
+`X-CardPulse-Operator-Token`. These routes are local operator controls, not a
+production authentication design.
+
+## Deterministic chaos source
+
+`/players` is the stable scraper target. `/__control` changes only its current
+mode:
+
+- `baseline-table` — verified player statistics and standings in tables;
+- `drift-cards` — identical business data in a different DOM structure;
+- `amended-stats` — structurally valid data with a real statistical change;
+- `unavailable` — a 503 source failure.
+
+The JSON fixture route exists for tests; the judge story is the HTML page
+changing under one stable URL.
+
+## Data and attribution
+
+The local demo contains fictional players and clubs plus original SVG/CSS art.
+Its football record model is inspired by
+[OpenLigaDB](https://www.openligadb.de/), whose published database is offered
+under the [Open Database License (ODbL)](https://www.openligadb.de/lizenz).
+CardPulse does not redistribute third-party player photos, club crests, league
+marks, or an OpenLigaDB data dump.
+
+Before adding another real source, verify its terms, robots policy, rate limits,
+and redistribution rights. Keep source adapters isolated so one site's layout
+or policy does not contaminate the canonical football model.
+
+## Verification
+
+```bash
 pnpm check
 ```
 
-`pnpm check` runs lint, type checking, unit tests, production builds, and the
-collector demo for the whole workspace.
-
-## Workspace map
-
-| Workspace                   | Purpose                                                                            | Run it                                                      |
-| --------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `apps/web`                  | Judge-facing dashboard for collection, quarantine, approval, recovery, and changes | `pnpm --filter @bidsentinel/web dev`                        |
-| `apps/chaos-source`         | Stable public HTML target with controllable layout and business-data changes       | `pnpm --filter @bidsentinel/chaos-source dev`               |
-| `services/collector-worker` | API, Bright Data runtime bridge, validation, snapshots, diffing, and recovery      | `pnpm --filter @bidsentinel/collector-worker start`         |
-| `packages/contracts`        | Canonical Zod schemas, inferred TypeScript types, and fixtures                     | `pnpm --filter @bidsentinel/contracts test`                 |
-| `packages/validation`       | Extraction validation, stable hashing, and quarantine record creation              | `pnpm --filter @bidsentinel/validation test`                |
-| `packages/brightdata`       | Scraper Studio trigger/poll adapter and same-collector healing adapter             | `pnpm --filter @bidsentinel/brightdata test`                |
-| `docs`                      | Architecture and local workflow notes                                              | Read `docs/architecture.md` and `docs/local-development.md` |
-
-Root shortcuts:
+This runs lint, typecheck, all tests, every workspace build, and the deterministic
+collector demo. The focused contracts and provider tests are:
 
 ```bash
-pnpm dev:web
-pnpm dev:chaos-source
-pnpm start:api
-pnpm collect
-pnpm demo:collector
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm --filter @bidsentinel/contracts test
+pnpm --filter @bidsentinel/brightdata test
 ```
 
-## Run the deterministic judge demo
+## Evidence status
 
-Use three terminals:
+- **Implemented and automatically verified:** football contracts, mapping,
+  strict validation, baseline preservation, minority-row safety, initial-empty
+  safety, batch drift detection, quarantine, valid-preview-only approval,
+  same-ID resume/poll/rerun evidence, API contracts, and UI state logic.
+- **Still required before a live claim:** one redacted credentialed Bright Data
+  baseline → drift → refactor preview → approval → same-ID recovery capture.
 
-```bash
-pnpm dev:chaos-source
-pnpm start:api
-pnpm dev:web
-```
-
-Open `http://127.0.0.1:4173`. The API defaults to safe mock mode when Bright
-Data credentials are absent. Follow the six numbered dashboard actions to show:
-
-1. a verified baseline;
-2. structural drift quarantined without corrupting that baseline;
-3. a same-collector healing request and preview;
-4. contract validation before the human approval gate;
-5. a successful rerun with recovery evidence; and
-6. a real deadline/corrigendum amendment detected after recovery.
-
-See [docs/demo-runbook.md](docs/demo-runbook.md) for the judge script and the
-separate live-evidence procedure.
-
-## Chaos source
-
-The local server listens on `http://127.0.0.1:4311` by default.
-
-```bash
-curl 'http://127.0.0.1:4311/health'
-curl 'http://127.0.0.1:4311/tenders'
-curl 'http://127.0.0.1:4311/__control'
-curl -X POST -H 'accept: application/json' \
-  -d 'mode=layout-cards' 'http://127.0.0.1:4311/__control'
-curl -X POST -H 'accept: application/json' \
-  -d 'mode=amended' 'http://127.0.0.1:4311/__control'
-```
-
-`/tenders` is the stable scraper target. `baseline-table` and `layout-cards`
-contain the same business data in different HTML structures; `amended` changes
-the deadline and adds a corrigendum. The control route is local demo tooling and
-must not be exposed publicly without protection.
-
-## Live Bright Data mode
-
-Copy `.env.example` to an untracked `.env` or export the variables in your
-shell. Configure a real `c_*` collector and use the stable chaos `/tenders` URL
-as its target. The trigger/poll adapter follows Scraper Studio's `dca` contract.
-Healing keeps the same collector ID, validates the returned preview, waits for
-human approval, resumes the job, polls it to `done`, and reruns that collector.
-
-All live mutation endpoints fail closed unless
-`BIDSENTINEL_ENABLE_LIVE_MUTATIONS=true` and a private 32+ character
-`BIDSENTINEL_OPERATOR_TOKEN` is supplied in the
-`X-BidSentinel-Operator-Token` header. Never commit or show the token.
-
-## Data behavior
-
-- Canonical tender and source-health payloads are strict Zod objects. Unknown
-  fields fail validation instead of leaking source-specific data downstream.
-- Snapshot fingerprints exclude `observedAt`, so an unchanged re-poll does not
-  create a fake state version.
-- Material state changes create a new immutable snapshot. Deadline, status, and
-  corrigendum differences additionally emit a typed change event.
-- The deterministic semantic diff engine emits only `new_tender`,
-  `deadline_changed`, `status_changed`, `corrigendum_added`, `tender_removed`,
-  `no_change`, or `invalid_snapshot`, with evidence attached to every event.
-- Temporary empty results, duplicate references, unhealthy sources, and record
-  count collapses retain the last verified snapshot.
-- Invalid payloads are retained with their raw value, SHA-256 hash, extractor
-  version, and normalized validation issues.
-- A valid poll following an active quarantine incident closes the incident and
-  records the recovery strategy, actions, timing, payload hash, and verification
-  counts.
-
-See [docs/architecture.md](docs/architecture.md) for boundaries and explicit MVP
-limits, and [docs/semantic-diff.md](docs/semantic-diff.md) for the exact snapshot
-acceptance rules.
+That distinction is deliberate: mock mode proves deterministic product
+behavior; only external evidence can prove the provider account path.

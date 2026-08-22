@@ -1,96 +1,90 @@
 # Architecture
 
+CardPulse is a football-domain application built around a provider-neutral
+reliability pipeline and a Bright Data Scraper Studio boundary.
+
 ## Data flow
 
 ```mermaid
 flowchart LR
-  Source[Public source / chaos HTML] --> BrightData[Bright Data collector c_*]
-  BrightData --> Extract[Extracted payload batch]
-  Extract --> Validate{TenderSchema}
-  Validate -->|invalid| Quarantine[Quarantine record]
-  Validate -->|valid| Fingerprint[Stable state fingerprint]
-  Fingerprint -->|new state| Snapshot[Versioned snapshot]
-  Snapshot --> Gate{Snapshot + source-health gate}
-  Gate -->|invalid| Retain[Retain last verified snapshot]
-  Gate -->|valid| Diff[Deterministic semantic diff]
-  Diff --> Events[Typed change events]
-  Quarantine -->|later valid poll| Recovery[Recovery evidence]
-  Recovery --> Health[Source health]
-  Validate --> Health
-  Quarantine --> DriftGate{Confirmed structural drift?}
-  DriftGate -->|no| Retain
-  DriftGate -->|yes| Heal[Refactor same collector]
-  Heal --> Preview[Schema and count preview gate]
+  HTML[Public football HTML] --> BD[Bright Data collector c_*]
+  BD --> Rows[Raw row batch]
+  Rows --> Map[Football row mapper]
+  Map --> Validate{Strict contract}
+  Validate -->|valid| Snapshot[Versioned snapshot]
+  Validate -->|invalid| Quarantine[Quarantine + payload hash]
+  Snapshot --> Diff[Deterministic semantic diff]
+  Diff --> API[Players / teams / standings / changes API]
+  API --> Card[Animated CardPulse UI]
+  Quarantine --> Gate{Confirmed batch drift?}
+  Gate -->|no| Preserve[Keep last verified card]
+  Gate -->|yes| Refactor[Refactor same c_* collector]
+  Refactor --> Preview[Schema + count preview]
   Preview --> Approval[Human approval]
-  Approval --> Rerun[Rerun same collector]
-  Rerun --> Recovery
+  Approval --> Rerun[Rerun same c_* collector]
+  Rerun --> Evidence[Recovery hashes and counts]
+  Evidence --> API
 ```
 
 ## Boundaries
 
-### Contracts
+### `packages/contracts`
 
-`packages/contracts` is the canonical boundary. Zod schemas are runtime
-validators and the exported TypeScript types are inferred from those schemas,
-which prevents a second hand-maintained model from drifting.
+The single source of truth. Runtime Zod schemas and inferred TypeScript types
+cover:
 
-The core records are:
+- `PlayerCard`: identity, club, position, season, appearances, goals, assists,
+  cards, and minutes;
+- `TeamSummaryRecord`: public club metadata;
+- `StandingEntry`: rank, record, goals, and points, including arithmetic
+  consistency checks;
+- `FootballSnapshot`, `FootballChangeEvent`, `QuarantinedExtraction`,
+  `SourceHealth`, and `RecoveryEvidence`;
+- typed, paginated API envelopes.
 
-- `Tender`: normalized tender state from one source observation.
-- `TenderSnapshot`: an immutable, numbered material-state version.
-- `TenderChangeEvent`: one or more monitored changes between two snapshots.
-- `QuarantinedExtraction`: raw invalid input plus normalized issues and hash.
-- `SourceHealth`: current source state and incident linkage.
-- `RecoveryEvidence`: what recovery happened and how it was verified.
-- `SnapshotSourceHealth`: record-count and absence evidence for a diff.
-- `SemanticDiffResult`: the snapshot decision and evidence-backed domain events.
+All schemas are strict. Unknown output fields fail closed.
 
-### Validation
+### `packages/brightdata`
 
-`packages/validation` owns deterministic serialization and SHA-256 payload
-hashes. It returns a discriminated success/quarantine result and checks that the
-payload's `sourceId` matches the collection context.
+Owns the external HTTP boundary and football row mapper. Collection calls
+`/dca/trigger` with `queue_next=1`, captures `collection_id`, and polls
+`/dca/dataset`. Healing uses the same first-class `c_*` collector for
+`refactor_template`, structured progress/preview, and
+`resume_automation_job`. Requests have time bounds, retry only transient
+failures, and expose sanitized typed errors.
 
-### Collector worker
+### `services/collector-worker`
 
-`services/collector-worker` contains the in-memory pipeline, an HTTP API, a
-one-cycle collection command, explicit mock/live runtime selection, and the
-self-healing coordinator. Persistence and scheduling remain replaceable seams.
+Owns validation, in-memory stores, batch drift classification, semantic
+diffing, source health, the healing coordinator, and the HTTP API.
 
-Snapshots represent material state, not every observation. The fingerprint
-therefore excludes `observedAt`; a duplicate poll updates source health without
-creating a new snapshot.
+Snapshot hashes exclude `observedAt`, so another successful poll of identical
+business data updates health without manufacturing a new material version.
+One malformed row is quarantined but cannot trigger a repair. An empty first
+run also cannot trigger a repair. Healing requires a verified count collapse,
+a structural majority after a baseline, or a repeated structural signature
+before a baseline exists.
 
-The semantic diff engine validates both snapshots before comparison. It rejects
-duplicate references, unhealthy collection state, suspicious record-count
-collapse, empty-result removals, identity drift, and chronology regressions.
-Invalid input returns the previous verified snapshot unchanged. See
-`docs/semantic-diff.md` for the fixed thresholds and event vocabulary.
+### `apps/chaos-source`
 
-### Provider package
+Provides one stable public path, `/players`. Its controlled states are
+`baseline-table`, `drift-cards`, `amended-stats`, and `unavailable`. The first
+two contain identical business data in different DOM structures. The control
+route is local demo tooling and must not be exposed publicly.
 
-`packages/brightdata` implements bounded Scraper Studio HTTP adapters. Collection
-triggers `/dca/trigger` with `queue_next=1`, then polls the returned collection
-job. Healing requests a refactor for the same `c_*` collector, preserves the
-structured preview, resumes only after approval, and polls terminal status.
-Errors are typed and sanitized; tokens remain in authorization headers.
+### `apps/web`
 
-### Local applications
+Consumes the typed API, renders player cards, team summaries, standings,
+provenance, quarantine, healing state, and recovery evidence. The UI labels
+mock and live truth explicitly and keeps data stable while chrome/glitch
+effects communicate a compromised source.
 
-`apps/chaos-source` supplies a stable HTML target whose table layout can become
-cards without changing business data, then publish a real amendment. `apps/web`
-consumes the typed API and presents the complete judge-visible recovery flow.
+## Security and MVP limits
 
-## Explicit MVP limits
-
-- State is in memory and resets when the process exits.
-- There is no scheduler, durable database, queue, user-account auth, or
-  notification delivery.
-- The chaos control route and `/api/dev/*` mutations are demo/operator surfaces,
-  not a public production control plane. Live mutations have an explicit flag
-  and operator-token gate; the chaos control route must remain local/private.
-- Automated tests use deterministic providers. A credentialed live Bright Data
-  run and saved external evidence are required before claiming the integration
-  has been demonstrated against a real account.
-
-These are intentional seams, not hidden production claims.
+- State is in memory and resets when the process stops.
+- There is no scheduler, durable queue/database, account system, or alerting.
+- Live mutations require an explicit flag and a strong operator token; these
+  controls are still local hackathon surfaces, not production authentication.
+- Credentials are environment-only and never included in response bodies.
+- Tests use deterministic providers. Live Bright Data behavior needs a
+  separately captured credentialed evidence trail before it is claimed.
