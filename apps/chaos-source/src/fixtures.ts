@@ -1,13 +1,15 @@
-import type { Tender } from "@bidsentinel/contracts";
+import type { FootballRecord } from "@bidsentinel/contracts";
 import {
-  tenderWithCorrigendumFixture,
-  validTenderFixture,
+  amendedPlayerFixture,
+  demoSourceId,
+  demoRecordsFor,
+  validPlayerFixtures,
 } from "@bidsentinel/contracts/fixtures";
 
 export const chaosModes = [
   "baseline-table",
-  "layout-cards",
-  "amended",
+  "drift-cards",
+  "amended-stats",
   "unavailable",
 ] as const;
 
@@ -19,23 +21,25 @@ export function isChaosMode(value: string): value is ChaosMode {
 }
 
 /** Layout modes return identical business data. Only their HTML differs. */
-export function buildTenderForMode(mode: AvailableChaosMode): Tender {
-  if (mode === "amended") {
-    return structuredClone({
-      ...validTenderFixture,
-      submissionDeadline: tenderWithCorrigendumFixture.submissionDeadline,
-      corrigenda: tenderWithCorrigendumFixture.corrigenda,
-    });
+export function buildRecordsForMode(
+  mode: AvailableChaosMode,
+): FootballRecord[] {
+  if (mode === "amended-stats") {
+    return structuredClone(demoRecordsFor("amended"));
   }
 
-  return structuredClone(validTenderFixture);
+  return structuredClone(demoRecordsFor("valid"));
 }
 
 export function fixtureEnvelope(mode: AvailableChaosMode) {
   return {
-    sourceId: validTenderFixture.sourceId,
-    extractorVersion: "chaos-source-v2",
+    sourceId: demoSourceId,
+    extractorVersion: "chaos-source-v3",
     mode,
-    items: [buildTenderForMode(mode)],
+    items: buildRecordsForMode(mode),
   };
 }
+
+export const trackedPlayerName = validPlayerFixtures[0]?.playerName ?? "";
+export const trackedGoalsBefore = validPlayerFixtures[0]?.stats.goals ?? 0;
+export const trackedGoalsAfter = amendedPlayerFixture.stats.goals;

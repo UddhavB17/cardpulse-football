@@ -1,26 +1,26 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  FootballSnapshotSchema,
   QuarantinedExtractionSchema,
   RecoveryEvidenceSchema,
   SourceHealthSchema,
-  TenderSnapshotSchema,
+  type FootballChangeEvent,
+  type FootballRecord,
+  type FootballSnapshot,
   type QuarantinedExtraction,
   type RecoveryEvidence,
   type SourceHealth,
-  type Tender,
-  type TenderChangeEvent,
-  type TenderSnapshot,
 } from "@bidsentinel/contracts";
 import {
   hashPayload,
-  validateTenderExtraction,
+  validateFootballExtraction,
   type ExtractionContext,
 } from "@bidsentinel/validation";
 
-import { detectTenderChanges } from "./change-detection.js";
+import { detectRecordChanges } from "./change-detection.js";
 import type { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { diffTenderSnapshots } from "./semantic-diff.js";
+import { diffFootballSnapshots } from "./semantic-diff.js";
 import {
   InMemoryChangeEventStore,
   InMemoryQuarantineStore,
@@ -37,9 +37,10 @@ export interface PipelineExtractionContext extends ExtractionContext {
 export type ProcessingResult =
   | {
       outcome: "accepted";
-      tender: Tender;
-      snapshot: TenderSnapshot | null;
-      changeEvent: TenderChangeEvent | null;
+      entityId: string;
+      record: FootballRecord;
+      snapshot: FootballSnapshot | null;
+      changeEvent: FootballChangeEvent | null;
       recoveryEvidence: RecoveryEvidence | null;
       health: SourceHealth;
     }
@@ -49,8 +50,10 @@ export type ProcessingResult =
       health: SourceHealth;
     };
 
-function tenderStateForHash(tender: Tender): Omit<Tender, "observedAt"> {
-  const { observedAt: _observedAt, ...state } = tender;
+function recordStateForHash(
+  record: FootballRecord,
+): Omit<FootballRecord, "observedAt"> {
+  const { observedAt: _observedAt, ...state } = record;
   return state;
 }
 
@@ -66,14 +69,23 @@ function incidentReasonFor(
   return hasStructuralFailure ? "schema-drift" : "invalid-extraction";
 }
 
+/**
+ * Root fields whose absence signals page-layout drift rather than a single
+ * bad value. The union covers every football entity type because a broken
+ * row may not even carry a recognizable entityType field.
+ */
 const STRUCTURAL_REQUIRED_FIELDS = new Set([
-  "tenderId",
-  "sourceId",
-  "externalId",
-  "title",
-  "buyer",
-  "status",
-  "url",
+  "entityType",
+  "playerId",
+  "teamId",
+  "playerName",
+  "name",
+  "team",
+  "position",
+  "season",
+  "competition",
+  "rank",
+  "stats",
 ]);
 
 function structuralFailureCount(quarantine: QuarantinedExtraction): number {
@@ -112,7 +124,7 @@ function structuralSignature(
   return facts.length === 0 ? null : [...new Set(facts)].join("|");
 }
 
-export class BidSentinelPipeline {
+export class CardPulsePipeline {
   readonly snapshots = new InMemorySnapshotStore();
   readonly quarantines = new InMemoryQuarantineStore();
   readonly changeEvents = new InMemoryChangeEventStore();
@@ -127,7 +139,7 @@ export class BidSentinelPipeline {
     input: unknown,
     context: PipelineExtractionContext,
   ): ProcessingResult {
-    const validation = validateTenderExtraction(input, context);
+    const validation = validateFootballExtraction(input, context);
 
     if (!validation.ok) {
       const outcome = this.quarantine(
@@ -138,21 +150,23 @@ export class BidSentinelPipeline {
       return outcome;
     }
 
-    const tender = validation.value;
+    const record = validation.value;
+    const entityId = validation.entityId;
     const previousHealth = this.sourceHealth.get(context.sourceId);
-    const previousSnapshot = this.snapshots.latest(tender.tenderId);
-    const payloadHash = hashPayload(tenderStateForHash(tender));
-    const candidateSnapshot = TenderSnapshotSchema.parse({
+    const previousSnapshot = this.snapshots.latest(entityId);
+    const payloadHash = hashPayload(recordStateForHash(record));
+    const candidateSnapshot = FootballSnapshotSchema.parse({
       schemaVersion: 1,
       snapshotId: randomUUID(),
-      tenderId: tender.tenderId,
-      sourceId: tender.sourceId,
+      entityId,
+      entityType: record.entityType,
+      sourceId: record.sourceId,
       version: (previousSnapshot?.version ?? 0) + 1,
-      observedAt: tender.observedAt,
+      observedAt: record.observedAt,
       payloadHash,
-      tender,
+      record,
     });
-    const semanticDecision = diffTenderSnapshots({
+    const semanticDecision = diffFootballSnapshots({
       previous: previousSnapshot,
       current: candidateSnapshot,
       sourceHealth: {
@@ -163,7 +177,7 @@ export class BidSentinelPipeline {
         previousRecordCount: previousSnapshot === null ? 0 : 1,
         currentRecordCount: 1,
         consecutiveEmptyResults: 0,
-        consecutiveTenderAbsences: 0,
+        consecutiveAbsences: 0,
       },
     });
     const rejection = semanticDecision.events.find(
@@ -196,12 +210,12 @@ export class BidSentinelPipeline {
       previousSnapshot?.payloadHash === payloadHash ? null : candidateSnapshot;
     const changeEvent =
       snapshot !== null && previousSnapshot !== null
-        ? detectTenderChanges(previousSnapshot, snapshot, context.observedAt)
+        ? detectRecordChanges(previousSnapshot, snapshot, context.observedAt)
         : null;
 
     const recovered = this.buildRecoveryEvidence(
       previousHealth,
-      tender,
+      entityId,
       payloadHash,
       context,
     );
@@ -233,7 +247,8 @@ export class BidSentinelPipeline {
 
     return {
       outcome: "accepted",
-      tender,
+      entityId,
+      record,
       snapshot,
       changeEvent,
       recoveryEvidence: recovered,
@@ -247,7 +262,8 @@ export class BidSentinelPipeline {
   ): Promise<ProcessingResult> {
     const results = await this.processBatchWithHealing([input], context);
     const result = results[0];
-    if (!result) throw new Error("Single-row processing returned no outcome");
+    if (!result)
+      throw new Error("Single-record processing returned no outcome");
     return result;
   }
 
@@ -257,6 +273,8 @@ export class BidSentinelPipeline {
     expectedMinCount = 1,
     enableHealing = true,
   ): Promise<ProcessingResult[]> {
+    // Safety invariant: a first-ever empty batch has no verified baseline to
+    // contradict, so it can never trigger healing.
     const previousCount = this.#lastValidBatchCounts.get(context.sourceId) ?? 0;
     if (payloads.length === 0 && previousCount === 0) return [];
     const collapseThreshold =
@@ -285,7 +303,7 @@ export class BidSentinelPipeline {
           context.sourceId,
           context.collectorId,
           "schema-drift",
-          `Confirmed result-count collapse: expected at least ${collapseThreshold} tender records and received ${payloads.length}. Restore the canonical tender list extraction.`,
+          `Confirmed result-count collapse: expected at least ${collapseThreshold} football records and received ${payloads.length}. Restore the canonical football extraction.`,
           context.observedAt,
         );
       }
@@ -308,6 +326,8 @@ export class BidSentinelPipeline {
           structuralFailureCount(result.quarantine) > 0,
       )
       .map((result) => result.quarantine);
+    // Safety invariant: a minority of malformed rows is ordinary noise and
+    // must never trigger healing on its own.
     const structuralMajority =
       payloads.length > 0 &&
       structuralQuarantines.length >= Math.ceil(payloads.length / 2);
@@ -316,6 +336,8 @@ export class BidSentinelPipeline {
       structuralMajority &&
       signature !== null &&
       this.#lastStructuralBatchSignatures.get(context.sourceId) === signature;
+    // Without a verified baseline, drift requires the same structural failure
+    // signature twice before any repair request is sent.
     const confirmedDrift =
       structuralMajority && (previousCount > 0 || repeatedSignature);
 
@@ -411,7 +433,7 @@ export class BidSentinelPipeline {
 
   private buildRecoveryEvidence(
     previousHealth: SourceHealth | null,
-    tender: Tender,
+    entityId: string,
     payloadHash: string,
     context: PipelineExtractionContext,
   ): RecoveryEvidence | null {
@@ -433,10 +455,10 @@ export class BidSentinelPipeline {
         "Accepted a schema-valid payload on the next poll",
       ],
       verification: {
-        validTenderCount: 1,
+        validRecordCount: 1,
         quarantinedCount: this.quarantines.listBySource(context.sourceId)
           .length,
-        sampleTenderIds: [tender.tenderId],
+        sampleEntityIds: [entityId],
         payloadHashes: [payloadHash],
       },
     });

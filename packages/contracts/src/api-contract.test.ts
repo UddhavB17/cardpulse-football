@@ -4,40 +4,51 @@ import {
   ApiErrorResponseSchema,
   ApiHealthResponseSchema,
   ChangeEventListResponseSchema,
+  PlayerDetailResponseSchema,
+  PlayerListResponseSchema,
+  PlayerSummarySchema,
   QuarantineListResponseSchema,
   RecoveryEvidenceResponseSchema,
   SourceHealthListResponseSchema,
-  TenderDetailResponseSchema,
-  TenderListResponseSchema,
-  TenderSummarySchema,
+  StandingsListResponseSchema,
+  TeamListResponseSchema,
 } from "./index.js";
 import {
   emptyChangeEventListResponseFixture,
+  emptyPlayerListResponseFixture,
   emptyQuarantineListResponseFixture,
   emptySourceHealthListResponseFixture,
-  emptyTenderListResponseFixture,
+  emptyStandingsListResponseFixture,
+  emptyTeamListResponseFixture,
   validApiErrorResponseFixture,
   validApiHealthResponseFixture,
   validChangeEventListResponseFixture,
-  validQuarantinedExtractionFixture,
+  validPlayerDetailResponseFixture,
+  validPlayerListResponseFixture,
+  validPlayerSummaryFixture,
   validQuarantineListResponseFixture,
+  validQuarantinedExtractionFixture,
   validRecoveryEvidenceResponseFixture,
   validSourceHealthFixture,
   validSourceHealthListResponseFixture,
-  validTenderChangeEventFixture,
-  validTenderDetailResponseFixture,
-  validTenderListResponseFixture,
-  validTenderSummaryFixture,
+  validStandingsListResponseFixture,
+  validTeamListResponseFixture,
 } from "./fixtures.js";
 
 describe("API contract acceptance", () => {
   it.each([
     ["health", ApiHealthResponseSchema, validApiHealthResponseFixture],
-    ["tender list", TenderListResponseSchema, validTenderListResponseFixture],
+    ["player list", PlayerListResponseSchema, validPlayerListResponseFixture],
     [
-      "tender detail",
-      TenderDetailResponseSchema,
-      validTenderDetailResponseFixture,
+      "player detail",
+      PlayerDetailResponseSchema,
+      validPlayerDetailResponseFixture,
+    ],
+    ["team list", TeamListResponseSchema, validTeamListResponseFixture],
+    [
+      "standings",
+      StandingsListResponseSchema,
+      validStandingsListResponseFixture,
     ],
     [
       "change-event list",
@@ -65,7 +76,13 @@ describe("API contract acceptance", () => {
   });
 
   it.each([
-    ["tenders", TenderListResponseSchema, emptyTenderListResponseFixture],
+    ["players", PlayerListResponseSchema, emptyPlayerListResponseFixture],
+    ["teams", TeamListResponseSchema, emptyTeamListResponseFixture],
+    [
+      "standings",
+      StandingsListResponseSchema,
+      emptyStandingsListResponseFixture,
+    ],
     [
       "change events",
       ChangeEventListResponseSchema,
@@ -87,23 +104,23 @@ describe("API contract acceptance", () => {
 });
 
 describe("API contract rejection", () => {
-  it("rejects negative tender summary counts", () => {
+  it("rejects negative player summary stats", () => {
     expect(
-      TenderSummarySchema.safeParse({
-        ...validTenderSummaryFixture,
-        documentCount: -1,
+      PlayerSummarySchema.safeParse({
+        ...validPlayerSummaryFixture,
+        stats: { ...validPlayerSummaryFixture.stats, goals: -1 },
       }).success,
     ).toBe(false);
   });
 
-  it("rejects malformed tender detail snapshot hashes", () => {
+  it("rejects malformed player detail snapshot hashes", () => {
     expect(
-      TenderDetailResponseSchema.safeParse({
-        ...validTenderDetailResponseFixture,
+      PlayerDetailResponseSchema.safeParse({
+        ...validPlayerDetailResponseFixture,
         data: {
-          ...validTenderDetailResponseFixture.data,
+          ...validPlayerDetailResponseFixture.data,
           latestSnapshot: {
-            ...validTenderDetailResponseFixture.data.latestSnapshot,
+            ...validPlayerDetailResponseFixture.data.latestSnapshot,
             payloadHash: "not-a-sha256-hash",
           },
         },
@@ -113,10 +130,10 @@ describe("API contract rejection", () => {
 
   it("rejects list metadata that claims another page after the total", () => {
     expect(
-      TenderListResponseSchema.safeParse({
-        ...validTenderListResponseFixture,
+      PlayerListResponseSchema.safeParse({
+        ...validPlayerListResponseFixture,
         pagination: {
-          ...validTenderListResponseFixture.pagination,
+          ...validPlayerListResponseFixture.pagination,
           hasMore: true,
         },
       }).success,
@@ -129,8 +146,8 @@ describe("API contract rejection", () => {
         ...validChangeEventListResponseFixture,
         data: [
           {
-            ...validTenderChangeEventFixture,
-            detectedAt: "2026-08-21T05:00:00",
+            ...(validChangeEventListResponseFixture.data[0] as object),
+            detectedAt: "2026-08-21T14:00:00",
           },
         ],
       }).success,
@@ -146,9 +163,9 @@ describe("API contract rejection", () => {
             ...validSourceHealthFixture,
             activeIncident: {
               incidentId: "ec1ef7d9-f67c-45ab-b4a9-dfcf406564d2",
-              openedAt: "2026-08-20T05:05:00.000Z",
+              openedAt: "2026-08-21T14:05:00.000Z",
               reason: "invalid-extraction",
-              detail: "Invalid deadline",
+              detail: "Invalid stat value",
             },
           },
         ],
@@ -176,7 +193,7 @@ describe("API contract rejection", () => {
         ...validRecoveryEvidenceResponseFixture,
         data: {
           ...validRecoveryEvidenceResponseFixture.data,
-          completedAt: "2026-08-20T05:00:00.000Z",
+          completedAt: "2026-08-21T14:00:00.000Z",
         },
       }).success,
     ).toBe(false);
@@ -198,7 +215,7 @@ describe("API contract rejection", () => {
     expect(
       ApiHealthResponseSchema.safeParse({
         ...validApiHealthResponseFixture,
-        generatedAt: "2026-08-21T05:15:00",
+        generatedAt: "2026-08-21T14:15:00",
       }).success,
     ).toBe(false);
   });

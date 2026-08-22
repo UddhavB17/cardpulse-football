@@ -14,160 +14,274 @@ export const SourceIdSchema = z
   .max(100)
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 
-export const TenderStatusSchema = z.enum([
-  "announced",
-  "open",
-  "closed",
-  "awarded",
-  "cancelled",
-  "unknown",
+/** Bright Data collector IDs are first-class and always start with c_. */
+export const CollectorIdSchema = z
+  .string()
+  .trim()
+  .regex(/^c_[A-Za-z0-9_-]+$/, "A Bright Data collector ID must start with c_");
+
+export const SeasonSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4}$/, "Season must be a four digit starting year such as 2025");
+
+export const PositionSchema = z.enum([
+  "goalkeeper",
+  "defender",
+  "midfielder",
+  "forward",
 ]);
 
-export const TenderDocumentSchema = z
+const TeamRefSchema = z
   .object({
-    id: z.string().trim().min(1).max(200),
-    title: z.string().trim().min(1).max(500),
-    url: z.string().url(),
-    publishedAt: IsoDateTimeSchema.nullable(),
+    teamId: z.string().trim().min(1).max(120),
+    name: z.string().trim().min(1).max(200),
   })
   .strict();
 
-export const CorrigendumSchema = z
+const PlayerStatsSchema = z
   .object({
-    id: z.string().trim().min(1).max(200),
-    title: z.string().trim().min(1).max(500),
-    description: z.string().trim().min(1).max(10_000).nullable(),
-    publishedAt: IsoDateTimeSchema,
-    url: z.string().url().nullable(),
+    appearances: z.number().int().nonnegative().max(200),
+    goals: z.number().int().nonnegative().max(500),
+    assists: z.number().int().nonnegative().max(500),
+    yellowCards: z.number().int().nonnegative().max(200),
+    redCards: z.number().int().nonnegative().max(50),
+    minutesPlayed: z.number().int().nonnegative().max(100_000),
   })
   .strict();
 
-export const TenderSchema = z
+export const PlayerCardSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION),
-    tenderId: z.string().trim().min(1).max(250),
+    entityType: z.literal("player"),
+    playerId: z.string().trim().min(1).max(250),
     sourceId: SourceIdSchema,
     externalId: z.string().trim().min(1).max(200),
-    title: z.string().trim().min(1).max(1_000),
-    description: z.string().trim().min(1).max(50_000).nullable(),
-    buyer: z
-      .object({
-        name: z.string().trim().min(1).max(500),
-        countryCode: z
-          .string()
-          .regex(/^[A-Z]{2}$/)
-          .nullable(),
-      })
-      .strict(),
-    status: TenderStatusSchema,
-    publishedAt: IsoDateTimeSchema.nullable(),
-    submissionDeadline: IsoDateTimeSchema.nullable(),
-    url: z.string().url(),
-    estimatedValue: z
-      .object({
-        amount: z.number().finite().nonnegative(),
-        currency: z.string().regex(/^[A-Z]{3}$/),
-      })
-      .strict()
-      .nullable(),
-    documents: z.array(TenderDocumentSchema),
-    corrigenda: z.array(CorrigendumSchema),
+    playerName: z.string().trim().min(1).max(200),
+    team: TeamRefSchema,
+    position: PositionSchema,
+    shirtNumber: z.number().int().min(1).max(99).nullable(),
+    nationality: z.string().trim().min(1).max(80).nullable(),
+    season: SeasonSchema,
+    stats: PlayerStatsSchema,
+    sourceUrl: z.string().url(),
     observedAt: IsoDateTimeSchema,
   })
   .strict();
 
-export const TenderSnapshotSchema = z
+export const TeamSummaryRecordSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION),
+    entityType: z.literal("team"),
+    teamId: z.string().trim().min(1).max(250),
+    sourceId: SourceIdSchema,
+    externalId: z.string().trim().min(1).max(200),
+    name: z.string().trim().min(1).max(200),
+    shortName: z.string().trim().min(1).max(60).nullable(),
+    country: z
+      .string()
+      .regex(/^[A-Z]{2}$/)
+      .nullable(),
+    city: z.string().trim().min(1).max(120).nullable(),
+    stadium: z.string().trim().min(1).max(160).nullable(),
+    founded: z.number().int().min(1850).max(2100).nullable(),
+    coach: z.string().trim().min(1).max(160).nullable(),
+    sourceUrl: z.string().url(),
+    observedAt: IsoDateTimeSchema,
+  })
+  .strict();
+
+export const StandingEntrySchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION),
+    entityType: z.literal("standing"),
+    sourceId: SourceIdSchema,
+    externalId: z.string().trim().min(1).max(200),
+    competition: z.string().trim().min(1).max(120),
+    season: SeasonSchema,
+    teamId: z.string().trim().min(1).max(250),
+    teamName: z.string().trim().min(1).max(200),
+    rank: z.number().int().min(1).max(40),
+    played: z.number().int().nonnegative().max(200),
+    won: z.number().int().nonnegative().max(200),
+    drawn: z.number().int().nonnegative().max(200),
+    lost: z.number().int().nonnegative().max(200),
+    goalsFor: z.number().int().nonnegative().max(999),
+    goalsAgainst: z.number().int().nonnegative().max(999),
+    points: z.number().int().nonnegative().max(999),
+    sourceUrl: z.string().url(),
+    observedAt: IsoDateTimeSchema,
+  })
+  .strict();
+
+function standingConsistencyIssues(
+  record: FootballRecordBase,
+  context: z.RefinementCtx,
+): void {
+  if (record.entityType !== "standing") {
+    return;
+  }
+
+  if (record.won + record.drawn + record.lost !== record.played) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "won, drawn, and lost must add up to played",
+      path: ["played"],
+    });
+  }
+
+  if (record.points !== record.won * 3 + record.drawn) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "points must equal won * 3 + drawn",
+      path: ["points"],
+    });
+  }
+}
+
+const FootballRecordBaseSchema = z.discriminatedUnion("entityType", [
+  PlayerCardSchema,
+  TeamSummaryRecordSchema,
+  StandingEntrySchema,
+]);
+
+/**
+ * Parsed form of any extracted football record. Standings additionally carry
+ * arithmetic consistency guarantees enforced here so downstream consumers can
+ * trust won/drawn/lost/points without recomputing them.
+ */
+export const FootballRecordSchema = FootballRecordBaseSchema.superRefine(
+  standingConsistencyIssues,
+);
+
+type FootballRecordBase = z.infer<typeof FootballRecordBaseSchema>;
+
+export type FootballEntityType = FootballRecord["entityType"];
+
+/** Canonical stable identity of an extracted record inside one source. */
+export function entityIdOf(record: FootballRecord): string {
+  switch (record.entityType) {
+    case "player":
+      return record.playerId;
+    case "team":
+      return record.teamId;
+    case "standing":
+      return `${record.competition}:${record.season}:${record.teamId}`;
+  }
+}
+
+export const FootballSnapshotSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION),
     snapshotId: z.string().uuid(),
-    tenderId: z.string().trim().min(1).max(250),
+    entityId: z.string().trim().min(1).max(400),
+    entityType: z.enum(["player", "team", "standing"]),
     sourceId: SourceIdSchema,
     version: z.number().int().positive(),
     observedAt: IsoDateTimeSchema,
     payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
-    tender: TenderSchema,
+    record: FootballRecordSchema,
   })
   .strict()
   .superRefine((snapshot, context) => {
-    if (snapshot.tenderId !== snapshot.tender.tenderId) {
+    if (snapshot.entityId !== entityIdOf(snapshot.record)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Snapshot and tender IDs must match",
-        path: ["tenderId"],
+        message: "Snapshot and record entity IDs must match",
+        path: ["entityId"],
       });
     }
 
-    if (snapshot.sourceId !== snapshot.tender.sourceId) {
+    if (snapshot.sourceId !== snapshot.record.sourceId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Snapshot and tender source IDs must match",
+        message: "Snapshot and record source IDs must match",
         path: ["sourceId"],
       });
     }
   });
 
-const StatusChangeSchema = z
+const NumericStatChangeSchema = z
   .object({
-    kind: z.literal("status"),
-    before: TenderStatusSchema,
-    after: TenderStatusSchema,
+    kind: z.enum(["goals", "assists", "appearances", "minutes"]),
+    before: z.number().int(),
+    after: z.number().int(),
   })
   .strict();
 
-const DeadlineChangeSchema = z
+const DisciplineChangeSchema = z
   .object({
-    kind: z.literal("deadline"),
-    before: IsoDateTimeSchema.nullable(),
-    after: IsoDateTimeSchema.nullable(),
+    kind: z.literal("discipline"),
+    yellowBefore: z.number().int(),
+    yellowAfter: z.number().int(),
+    redBefore: z.number().int(),
+    redAfter: z.number().int(),
   })
   .strict();
 
-const CorrigendumUpdateSchema = z
+const ProfileChangeFieldSchema = z.enum([
+  "playerName",
+  "team",
+  "position",
+  "shirtNumber",
+  "nationality",
+  "name",
+  "shortName",
+  "country",
+  "city",
+  "stadium",
+  "founded",
+  "coach",
+]);
+
+const ProfileChangeSchema = z
   .object({
-    before: CorrigendumSchema,
-    after: CorrigendumSchema,
+    kind: z.literal("profile"),
+    field: ProfileChangeFieldSchema,
+    before: z.union([z.string(), z.number()]).nullable(),
+    after: z.union([z.string(), z.number()]).nullable(),
   })
   .strict();
 
-const CorrigendumChangeSchema = z
+const StandingChangeFieldSchema = z.enum([
+  "rank",
+  "points",
+  "played",
+  "won",
+  "drawn",
+  "lost",
+  "goalsFor",
+  "goalsAgainst",
+  "teamName",
+]);
+
+const StandingChangeSchema = z
   .object({
-    kind: z.literal("corrigendum"),
-    added: z.array(CorrigendumSchema),
-    removed: z.array(CorrigendumSchema),
-    updated: z.array(CorrigendumUpdateSchema),
+    kind: z.literal("standing"),
+    field: StandingChangeFieldSchema,
+    before: z.union([z.string(), z.number()]).nullable(),
+    after: z.union([z.string(), z.number()]).nullable(),
   })
   .strict();
 
-export const TenderChangeSchema = z
-  .discriminatedUnion("kind", [
-    StatusChangeSchema,
-    DeadlineChangeSchema,
-    CorrigendumChangeSchema,
-  ])
-  .superRefine((change, context) => {
-    if (
-      change.kind === "corrigendum" &&
-      change.added.length === 0 &&
-      change.removed.length === 0 &&
-      change.updated.length === 0
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "A corrigendum change must include at least one difference",
-      });
-    }
-  });
+export const StatChangeSchema = z.discriminatedUnion("kind", [
+  NumericStatChangeSchema,
+  DisciplineChangeSchema,
+  ProfileChangeSchema,
+  StandingChangeSchema,
+]);
 
-export const TenderChangeEventSchema = z
+export const FootballChangeEventSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION),
     changeEventId: z.string().uuid(),
-    tenderId: z.string().trim().min(1).max(250),
+    entityId: z.string().trim().min(1).max(400),
+    entityType: z.enum(["player", "team", "standing"]),
     sourceId: SourceIdSchema,
     fromSnapshotId: z.string().uuid(),
     toSnapshotId: z.string().uuid(),
     detectedAt: IsoDateTimeSchema,
-    changes: z.array(TenderChangeSchema).min(1),
+    changes: z.array(StatChangeSchema).min(1),
   })
   .strict();
 
@@ -199,9 +313,9 @@ export const RecoveryEvidenceSchema = z
     actions: z.array(z.string().trim().min(1).max(500)).min(1),
     verification: z
       .object({
-        validTenderCount: z.number().int().nonnegative(),
+        validRecordCount: z.number().int().nonnegative(),
         quarantinedCount: z.number().int().nonnegative(),
-        sampleTenderIds: z.array(z.string().trim().min(1).max(250)).max(20),
+        sampleEntityIds: z.array(z.string().trim().min(1).max(400)).max(20),
         payloadHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(20),
       })
       .strict(),
@@ -290,12 +404,12 @@ export const SnapshotSourceHealthSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION),
     sourceId: SourceIdSchema,
-    state: SourceHealthStateSchema,
+    state: z.enum(["healthy", "degraded", "quarantined", "recovering"]),
     checkedAt: IsoDateTimeSchema,
     previousRecordCount: z.number().int().nonnegative(),
     currentRecordCount: z.number().int().nonnegative(),
     consecutiveEmptyResults: z.number().int().nonnegative(),
-    consecutiveTenderAbsences: z.number().int().nonnegative(),
+    consecutiveAbsences: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -316,10 +430,8 @@ export const SemanticDiffEvidenceSchema = z
     engineVersion: z.literal("semantic-diff-v1"),
     rule: z.enum([
       "first_verified_snapshot",
-      "deadline_instant_changed",
-      "status_value_changed",
-      "new_corrigendum_reference",
-      "confirmed_tender_absence",
+      "field_value_changed",
+      "confirmed_entity_absence",
       "semantic_state_unchanged",
       "absence_unconfirmed",
       "no_baseline_or_current",
@@ -341,49 +453,34 @@ export const SemanticDiffIssueSchema = z
   })
   .strict();
 
-const SemanticTenderIdSchema = z.string().trim().min(1).max(250);
+const SemanticEntityIdSchema = z.string().trim().min(1).max(400);
 
-const NewTenderSemanticEventSchema = z
+const NewRecordSemanticEventSchema = z
   .object({
-    kind: z.literal("new_tender"),
-    tenderId: SemanticTenderIdSchema,
+    kind: z.literal("new_record"),
+    entityId: SemanticEntityIdSchema,
+    entityType: z.enum(["player", "team", "standing"]),
     evidence: SemanticDiffEvidenceSchema,
   })
   .strict();
 
-const DeadlineChangedSemanticEventSchema = z
+const FieldChangedSemanticEventSchema = z
   .object({
-    kind: z.literal("deadline_changed"),
-    tenderId: SemanticTenderIdSchema,
-    before: IsoDateTimeSchema.nullable(),
-    after: IsoDateTimeSchema.nullable(),
+    kind: z.literal("field_changed"),
+    entityId: SemanticEntityIdSchema,
+    entityType: z.enum(["player", "team", "standing"]),
+    field: z.string().trim().min(1).max(80),
+    before: SemanticEvidenceFactScalarSchema,
+    after: SemanticEvidenceFactScalarSchema,
     evidence: SemanticDiffEvidenceSchema,
   })
   .strict();
 
-const StatusChangedSemanticEventSchema = z
+const EntityRemovedSemanticEventSchema = z
   .object({
-    kind: z.literal("status_changed"),
-    tenderId: SemanticTenderIdSchema,
-    before: TenderStatusSchema,
-    after: TenderStatusSchema,
-    evidence: SemanticDiffEvidenceSchema,
-  })
-  .strict();
-
-const CorrigendumAddedSemanticEventSchema = z
-  .object({
-    kind: z.literal("corrigendum_added"),
-    tenderId: SemanticTenderIdSchema,
-    corrigendum: CorrigendumSchema,
-    evidence: SemanticDiffEvidenceSchema,
-  })
-  .strict();
-
-const TenderRemovedSemanticEventSchema = z
-  .object({
-    kind: z.literal("tender_removed"),
-    tenderId: SemanticTenderIdSchema,
+    kind: z.literal("entity_removed"),
+    entityId: SemanticEntityIdSchema,
+    entityType: z.enum(["player", "team", "standing"]),
     evidence: SemanticDiffEvidenceSchema,
   })
   .strict();
@@ -391,7 +488,7 @@ const TenderRemovedSemanticEventSchema = z
 const NoChangeSemanticEventSchema = z
   .object({
     kind: z.literal("no_change"),
-    tenderId: SemanticTenderIdSchema.nullable(),
+    entityId: SemanticEntityIdSchema.nullable(),
     reason: z.enum([
       "semantic_state_unchanged",
       "absence_unconfirmed",
@@ -404,18 +501,16 @@ const NoChangeSemanticEventSchema = z
 const InvalidSnapshotSemanticEventSchema = z
   .object({
     kind: z.literal("invalid_snapshot"),
-    tenderId: SemanticTenderIdSchema.nullable(),
+    entityId: SemanticEntityIdSchema.nullable(),
     issues: z.array(SemanticDiffIssueSchema).min(1),
     evidence: SemanticDiffEvidenceSchema,
   })
   .strict();
 
 export const SemanticDiffEventSchema = z.discriminatedUnion("kind", [
-  NewTenderSemanticEventSchema,
-  DeadlineChangedSemanticEventSchema,
-  StatusChangedSemanticEventSchema,
-  CorrigendumAddedSemanticEventSchema,
-  TenderRemovedSemanticEventSchema,
+  NewRecordSemanticEventSchema,
+  FieldChangedSemanticEventSchema,
+  EntityRemovedSemanticEventSchema,
   NoChangeSemanticEventSchema,
   InvalidSnapshotSemanticEventSchema,
 ]);
@@ -423,7 +518,7 @@ export const SemanticDiffEventSchema = z.discriminatedUnion("kind", [
 export const SemanticDiffResultSchema = z
   .object({
     decision: z.enum(["accept_current", "retain_previous", "mark_removed"]),
-    lastVerifiedSnapshot: TenderSnapshotSchema.nullable(),
+    lastVerifiedSnapshot: FootballSnapshotSchema.nullable(),
     events: z.array(SemanticDiffEventSchema).min(1),
   })
   .strict()
@@ -441,11 +536,11 @@ export const SemanticDiffResultSchema = z
 
     if (
       result.decision === "mark_removed" &&
-      !result.events.some((event) => event.kind === "tender_removed")
+      !result.events.some((event) => event.kind === "entity_removed")
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "A removal decision requires tender_removed evidence",
+        message: "A removal decision requires entity_removed evidence",
         path: ["events"],
       });
     }
@@ -467,10 +562,31 @@ export const ApiHealthResponseSchema = z
     data: z
       .object({
         schemaVersion: z.literal(SCHEMA_VERSION),
-        service: z.literal("bidsentinel-api"),
+        service: z.literal("cardpulse-api"),
         status: z.literal("ok"),
       })
       .strict(),
+    generatedAt: IsoDateTimeSchema,
+  })
+  .strict();
+
+export const RuntimeStatusSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION),
+    service: z.literal("cardpulse-api"),
+    domain: z.literal("football"),
+    mode: z.enum(["mock", "live"]),
+    sourceId: SourceIdSchema,
+    collectorConfigured: z.boolean(),
+    targetConfigured: z.boolean(),
+    liveMutationsEnabled: z.boolean(),
+    configurationIssues: z.array(z.string().trim().min(1)),
+  })
+  .strict();
+
+export const RuntimeStatusResponseSchema = z
+  .object({
+    data: RuntimeStatusSchema,
     generatedAt: IsoDateTimeSchema,
   })
   .strict();
@@ -484,40 +600,48 @@ export const PaginationSchema = z
   })
   .strict();
 
-const TenderSummarySnapshotSchema = z
+const SummarySnapshotSchema = z
   .object({
     snapshotId: z.string().uuid(),
     version: z.number().int().positive(),
   })
   .strict();
 
-const TenderDetailSnapshotSchema = TenderSummarySnapshotSchema.extend({
+const DetailSnapshotSchema = SummarySnapshotSchema.extend({
   payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
-export const TenderSummarySchema = TenderSchema.pick({
+export const PlayerSummarySchema = PlayerCardSchema.pick({
   schemaVersion: true,
-  tenderId: true,
+  playerId: true,
   sourceId: true,
-  externalId: true,
-  title: true,
-  buyer: true,
-  status: true,
-  publishedAt: true,
-  submissionDeadline: true,
-  url: true,
-  estimatedValue: true,
+  playerName: true,
+  team: true,
+  position: true,
+  shirtNumber: true,
+  season: true,
+  stats: true,
   observedAt: true,
 })
   .extend({
-    latestSnapshot: TenderSummarySnapshotSchema,
-    documentCount: z.number().int().nonnegative(),
-    corrigendumCount: z.number().int().nonnegative(),
+    latestSnapshot: SummarySnapshotSchema,
   })
   .strict();
 
-export const TenderDetailSchema = TenderSchema.extend({
-  latestSnapshot: TenderDetailSnapshotSchema,
+export const PlayerDetailSchema = PlayerCardSchema.extend({
+  latestSnapshot: DetailSnapshotSchema,
+}).strict();
+
+export const TeamListItemSchema = TeamSummaryRecordSchema.extend({
+  latestSnapshot: SummarySnapshotSchema,
+}).strict();
+
+export const TeamDetailSchema = TeamSummaryRecordSchema.extend({
+  latestSnapshot: DetailSnapshotSchema,
+}).strict();
+
+export const StandingsListItemSchema = StandingEntrySchema.extend({
+  latestSnapshot: SummarySnapshotSchema,
 }).strict();
 
 function createListResponseSchema<ItemSchema extends z.ZodTypeAny>(
@@ -586,12 +710,19 @@ function createDetailResponseSchema<ItemSchema extends z.ZodTypeAny>(
     .strict();
 }
 
-export const TenderListResponseSchema =
-  createListResponseSchema(TenderSummarySchema);
-export const TenderDetailResponseSchema =
-  createDetailResponseSchema(TenderDetailSchema);
+export const PlayerListResponseSchema =
+  createListResponseSchema(PlayerSummarySchema);
+export const PlayerDetailResponseSchema =
+  createDetailResponseSchema(PlayerDetailSchema);
+export const TeamListResponseSchema =
+  createListResponseSchema(TeamListItemSchema);
+export const TeamDetailResponseSchema =
+  createDetailResponseSchema(TeamDetailSchema);
+export const StandingsListResponseSchema = createListResponseSchema(
+  StandingsListItemSchema,
+);
 export const ChangeEventListResponseSchema = createListResponseSchema(
-  TenderChangeEventSchema,
+  FootballChangeEventSchema,
 );
 export const SourceHealthListResponseSchema =
   createListResponseSchema(SourceHealthSchema);
@@ -665,8 +796,23 @@ export type ApiHealthResponse = z.infer<typeof ApiHealthResponseSchema>;
 export type ChangeEventListResponse = z.infer<
   typeof ChangeEventListResponseSchema
 >;
-export type Corrigendum = z.infer<typeof CorrigendumSchema>;
+export type CollectorId = z.infer<typeof CollectorIdSchema>;
+export type FootballChangeEvent = z.infer<typeof FootballChangeEventSchema>;
+export type FootballRecord = z.infer<typeof FootballRecordSchema>;
+export type FootballSnapshot = z.infer<typeof FootballSnapshotSchema>;
+export type PaginatedListResponse<Item> = {
+  data: Item[];
+  pagination: Pagination;
+  generatedAt: string;
+};
 export type Pagination = z.infer<typeof PaginationSchema>;
+export type PlayerCard = z.infer<typeof PlayerCardSchema>;
+export type PlayerDetail = z.infer<typeof PlayerDetailSchema>;
+export type PlayerDetailResponse = z.infer<typeof PlayerDetailResponseSchema>;
+export type PlayerListResponse = z.infer<typeof PlayerListResponseSchema>;
+export type PlayerStats = z.infer<typeof PlayerStatsSchema>;
+export type PlayerSummary = z.infer<typeof PlayerSummarySchema>;
+export type Position = z.infer<typeof PositionSchema>;
 export type QuarantineListResponse = z.infer<
   typeof QuarantineListResponseSchema
 >;
@@ -675,6 +821,8 @@ export type RecoveryEvidence = z.infer<typeof RecoveryEvidenceSchema>;
 export type RecoveryEvidenceResponse = z.infer<
   typeof RecoveryEvidenceResponseSchema
 >;
+export type RuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
+export type RuntimeStatusResponse = z.infer<typeof RuntimeStatusResponseSchema>;
 export type SemanticDiffEvent = z.infer<typeof SemanticDiffEventSchema>;
 export type SemanticDiffEvidence = z.infer<typeof SemanticDiffEvidenceSchema>;
 export type SemanticDiffIssue = z.infer<typeof SemanticDiffIssueSchema>;
@@ -684,11 +832,13 @@ export type SourceHealth = z.infer<typeof SourceHealthSchema>;
 export type SourceHealthListResponse = z.infer<
   typeof SourceHealthListResponseSchema
 >;
-export type Tender = z.infer<typeof TenderSchema>;
-export type TenderChange = z.infer<typeof TenderChangeSchema>;
-export type TenderChangeEvent = z.infer<typeof TenderChangeEventSchema>;
-export type TenderDetail = z.infer<typeof TenderDetailSchema>;
-export type TenderDetailResponse = z.infer<typeof TenderDetailResponseSchema>;
-export type TenderListResponse = z.infer<typeof TenderListResponseSchema>;
-export type TenderSnapshot = z.infer<typeof TenderSnapshotSchema>;
-export type TenderSummary = z.infer<typeof TenderSummarySchema>;
+export type StandingEntry = z.infer<typeof StandingEntrySchema>;
+export type StandingsListItem = z.infer<typeof StandingsListItemSchema>;
+export type StandingsListResponse = z.infer<typeof StandingsListResponseSchema>;
+export type StatChange = z.infer<typeof StatChangeSchema>;
+export type TeamListItem = z.infer<typeof TeamListItemSchema>;
+export type TeamDetail = z.infer<typeof TeamDetailSchema>;
+export type TeamDetailResponse = z.infer<typeof TeamDetailResponseSchema>;
+export type TeamListResponse = z.infer<typeof TeamListResponseSchema>;
+export type TeamRef = z.infer<typeof TeamRefSchema>;
+export type TeamSummaryRecord = z.infer<typeof TeamSummaryRecordSchema>;

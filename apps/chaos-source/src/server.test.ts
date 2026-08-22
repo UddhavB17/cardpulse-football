@@ -36,41 +36,66 @@ async function setMode(baseUrl: string, mode: string): Promise<Response> {
 }
 
 describe("chaos source HTTP server", () => {
-  it("keeps /tenders stable while the control route changes its layout", async () => {
+  it("serves baseline table markup on the stable /players target", async () => {
     const baseUrl = await startServer();
-    const baseline = await fetch(`${baseUrl}/tenders`);
+    const baseline = await fetch(`${baseUrl}/players`);
     expect(baseline.status).toBe(200);
     expect(baseline.headers.get("content-type")).toContain("text/html");
-    expect(await baseline.text()).toContain('data-layout="table"');
+    const html = await baseline.text();
+    expect(html).toContain('data-layout="table"');
+    expect(html).toContain('data-table="players"');
+    expect(html).toContain("Finn Krüger");
+    expect(html).toContain("18");
+  });
 
-    const control = await setMode(baseUrl, "layout-cards");
+  it("switches to structurally changed card markup with the same valid data", async () => {
+    const baseUrl = await startServer();
+    const control = await setMode(baseUrl, "drift-cards");
     expect(control.status).toBe(200);
     expect(await control.json()).toEqual({
-      mode: "layout-cards",
-      publicTarget: "/tenders",
+      mode: "drift-cards",
+      publicTarget: "/players",
     });
 
-    const cards = await fetch(`${baseUrl}/tenders`);
-    expect(await cards.text()).toContain('data-layout="cards"');
+    const cards = await (await fetch(`${baseUrl}/players`)).text();
+    expect(cards).toContain('data-layout="cards"');
+    expect(cards).not.toContain('data-layout="table"');
+    expect(cards).not.toContain("<table");
+    expect(cards).toContain("Finn Krüger");
+    expect(cards).toContain("18");
+  });
+
+  it("amended-stats keeps the card layout but changes a real stat value", async () => {
+    const baseUrl = await startServer();
+    await setMode(baseUrl, "drift-cards");
+    const drifted = await (await fetch(`${baseUrl}/players`)).text();
+
+    await setMode(baseUrl, "amended-stats");
+    const amended = await (await fetch(`${baseUrl}/players`)).text();
+
+    expect(amended).toContain('data-layout="cards"');
+    expect(amended).toContain("21");
+    expect(drifted).toContain("18");
+    expect(drifted).not.toContain("21");
   });
 
   it("preserves deterministic JSON separately from the public HTML", async () => {
     const baseUrl = await startServer();
     const response = await fetch(
-      `${baseUrl}/fixtures/tenders?mode=layout-cards`,
+      `${baseUrl}/fixtures/records?mode=drift-cards`,
     );
     const body = (await response.json()) as {
       mode: string;
-      items: Array<{ submissionDeadline: string; corrigenda: unknown[] }>;
+      items: Array<{ entityType: string }>;
     };
 
     expect(response.status).toBe(200);
-    expect(body.mode).toBe("layout-cards");
-    expect(body.items[0]?.corrigenda).toHaveLength(0);
+    expect(body.mode).toBe("drift-cards");
+    expect(body.items.length).toBeGreaterThan(0);
 
-    await setMode(baseUrl, "amended");
+    await setMode(baseUrl, "amended-stats");
     const sameFixture = await fetch(
-      `${baseUrl}/fixtures/tenders?mode=layout-cards`,
+      `${baseUrl}/fixtures/records?mode=drift-cards`,
     );
     expect(await sameFixture.json()).toEqual(body);
   });
@@ -79,7 +104,7 @@ describe("chaos source HTTP server", () => {
     const baseUrl = await startServer();
     await setMode(baseUrl, "unavailable");
 
-    const response = await fetch(`${baseUrl}/tenders`);
+    const response = await fetch(`${baseUrl}/players`);
     expect(response.status).toBe(503);
     expect(await response.text()).toContain("Temporarily unavailable");
   });
@@ -93,47 +118,28 @@ describe("chaos source HTTP server", () => {
       error: "unsupported_mode",
       supportedModes: [
         "baseline-table",
-        "layout-cards",
-        "amended",
+        "drift-cards",
+        "amended-stats",
         "unavailable",
       ],
     });
 
-    const publicPage = await fetch(`${baseUrl}/tenders`);
+    const publicPage = await fetch(`${baseUrl}/players`);
     expect(await publicPage.text()).toContain('data-layout="table"');
-  });
-
-  it("renders only the intended amendment after the card-layout state", async () => {
-    const baseUrl = await startServer();
-    await setMode(baseUrl, "layout-cards");
-    const layoutOnly = await fetch(`${baseUrl}/tenders`).then((response) =>
-      response.text(),
-    );
-
-    await setMode(baseUrl, "amended");
-    const amended = await fetch(`${baseUrl}/tenders`).then((response) =>
-      response.text(),
-    );
-
-    expect(layoutOnly).toContain('data-layout="cards"');
-    expect(layoutOnly).not.toContain("Submission deadline extension");
-    expect(amended).toContain('data-layout="cards"');
-    expect(amended).toContain("Submission deadline extension");
-    expect(amended).toContain("22 September 2026");
   });
 
   it("reports the current mode through the separate control route", async () => {
     const baseUrl = await startServer();
-    await setMode(baseUrl, "layout-cards");
+    await setMode(baseUrl, "drift-cards");
 
     const response = await fetch(`${baseUrl}/__control`);
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("layout-cards — current");
+    expect(await response.text()).toContain("drift-cards — current");
   });
 
   it("applies security headers and returns 405 for unsupported methods", async () => {
     const baseUrl = await startServer();
-    const response = await fetch(`${baseUrl}/tenders`, { method: "POST" });
+    const response = await fetch(`${baseUrl}/players`, { method: "POST" });
 
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET");

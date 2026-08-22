@@ -2,31 +2,31 @@ import type {
   QuarantinedExtraction,
   RecoveryEvidence,
   SourceHealth,
-  TenderChangeEvent,
-  TenderSnapshot,
+  FootballChangeEvent,
+  FootballSnapshot,
 } from "@bidsentinel/contracts";
 
 export class InMemorySnapshotStore {
-  readonly #items = new Map<string, TenderSnapshot[]>();
+  readonly #items = new Map<string, FootballSnapshot[]>();
 
-  append(snapshot: TenderSnapshot): void {
-    const existing = this.#items.get(snapshot.tenderId) ?? [];
-    this.#items.set(snapshot.tenderId, [
+  append(snapshot: FootballSnapshot): void {
+    const existing = this.#items.get(snapshot.entityId) ?? [];
+    this.#items.set(snapshot.entityId, [
       ...existing,
       structuredClone(snapshot),
     ]);
   }
 
-  latest(tenderId: string): TenderSnapshot | null {
-    const snapshot = this.#items.get(tenderId)?.at(-1);
+  latest(entityId: string): FootballSnapshot | null {
+    const snapshot = this.#items.get(entityId)?.at(-1);
     return snapshot === undefined ? null : structuredClone(snapshot);
   }
 
-  list(tenderId: string): TenderSnapshot[] {
-    return structuredClone(this.#items.get(tenderId) ?? []);
+  list(entityId: string): FootballSnapshot[] {
+    return structuredClone(this.#items.get(entityId) ?? []);
   }
 
-  listUniqueTenderIds(): string[] {
+  listUniqueEntityIds(): string[] {
     return Array.from(this.#items.keys());
   }
 }
@@ -48,13 +48,13 @@ export class InMemoryQuarantineStore {
 }
 
 export class InMemoryChangeEventStore {
-  readonly #items: TenderChangeEvent[] = [];
+  readonly #items: FootballChangeEvent[] = [];
 
-  append(event: TenderChangeEvent): void {
+  append(event: FootballChangeEvent): void {
     this.#items.push(structuredClone(event));
   }
 
-  list(): TenderChangeEvent[] {
+  list(): FootballChangeEvent[] {
     return structuredClone(this.#items);
   }
 }

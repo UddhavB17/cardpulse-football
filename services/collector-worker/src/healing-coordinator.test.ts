@@ -1,24 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  type TenderHealingProgress,
-  type TenderHealingProvider,
+  type FootballHealingProgress,
+  type FootballHealingProvider,
 } from "@bidsentinel/brightdata";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import { amendedPlayerFixture } from "@bidsentinel/contracts/fixtures";
 
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 
-const observedAt = "2026-08-20T05:00:00.000Z";
+const observedAt = "2026-08-20T14:00:00.000Z";
 const collectorId = "c_same_collector";
 const context = {
-  sourceId: "gem",
+  sourceId: "openligadb",
   collectorId,
-  extractorVersion: "tender-parser-v1",
+  extractorVersion: "football-parser-v1",
   observedAt,
 };
 
-class ScriptedHealingProvider implements TenderHealingProvider {
+import { validPlayerFixture } from "@bidsentinel/contracts/fixtures";
+
+class ScriptedHealingProvider implements FootballHealingProvider {
   readonly triggerRefactor = vi.fn(async () => undefined);
   readonly resumeAutomationJob = vi.fn(async () => undefined);
   readonly pollRefactorProgress = vi.fn(async () => {
@@ -27,15 +29,15 @@ class ScriptedHealingProvider implements TenderHealingProvider {
     return progress;
   });
 
-  constructor(private readonly progress: TenderHealingProgress[]) {}
+  constructor(private readonly progress: FootballHealingProgress[]) {}
 }
 
 function validVerification() {
   return {
     success: true,
-    validTenderCount: 1,
+    validRecordCount: 1,
     quarantinedCount: 0,
-    sampleTenderIds: [validTenderFixture.tenderId],
+    sampleEntityIds: [validPlayerFixture.playerId],
     payloadHashes: ["a".repeat(64)],
   };
 }
@@ -46,15 +48,15 @@ describe("SelfHealingCoordinator reliability gate", () => {
     const coordinator = new SelfHealingCoordinator(provider, {
       pollIntervalMs: 0,
     });
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = coordinator;
-    await pipeline.processWithHealing(validTenderFixture, context);
+    await pipeline.processWithHealing(validPlayerFixture, context);
 
     const result = await pipeline.processWithHealing(
       {
-        tenderId: validTenderFixture.tenderId,
-        externalId: validTenderFixture.externalId,
-        url: validTenderFixture.url,
+        entityType: "player",
+        playerId: validPlayerFixture.playerId,
+        sourceUrl: validPlayerFixture.sourceUrl,
       },
       context,
     );
@@ -64,48 +66,53 @@ describe("SelfHealingCoordinator reliability gate", () => {
       collectorId,
       expect.stringContaining("Confirmed batch-level layout drift"),
     );
-    expect(coordinator.getHealingState("gem")).toBe("healing_requested");
-    expect(coordinator.getIncident("gem")?.collectorId).toBe(collectorId);
+    expect(coordinator.getHealingState("openligadb")).toBe("healing_requested");
+    expect(coordinator.getIncident("openligadb")?.collectorId).toBe(
+      collectorId,
+    );
   });
 
-  it("does not heal one malformed date and preserves the verified baseline", async () => {
+  it("does not heal one malformed stat and preserves the verified card", async () => {
     const provider = new ScriptedHealingProvider([]);
     const coordinator = new SelfHealingCoordinator(provider);
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = coordinator;
-    pipeline.process(validTenderFixture, context);
+    pipeline.process(validPlayerFixture, context);
 
     const result = await pipeline.processWithHealing(
-      { ...validTenderFixture, submissionDeadline: "tomorrow" },
+      {
+        ...validPlayerFixture,
+        stats: { ...validPlayerFixture.stats, goals: "eighteen" },
+      },
       context,
     );
 
     expect(result.outcome).toBe("quarantined");
     expect(provider.triggerRefactor).not.toHaveBeenCalled();
-    expect(pipeline.snapshots.list(validTenderFixture.tenderId)).toHaveLength(
+    expect(pipeline.snapshots.list(validPlayerFixture.playerId)).toHaveLength(
       1,
     );
-    expect(
-      pipeline.snapshots.latest(validTenderFixture.tenderId)?.tender
-        .submissionDeadline,
-    ).toBe(validTenderFixture.submissionDeadline);
+    const stored = pipeline.snapshots.latest(validPlayerFixture.playerId);
+    if (stored?.record.entityType === "player") {
+      expect(stored.record.stats.goals).toBe(validPlayerFixture.stats.goals);
+    }
   });
 
   it("requires repeated evidence for a single missing structural field", async () => {
     const provider = new ScriptedHealingProvider([]);
     const coordinator = new SelfHealingCoordinator(provider);
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = coordinator;
-    const missingTitle = structuredClone(validTenderFixture) as Record<
+    const missingName = structuredClone(validPlayerFixture) as Record<
       string,
       unknown
     >;
-    delete missingTitle.title;
+    delete missingName.playerName;
 
-    await pipeline.processWithHealing(missingTitle, context);
+    await pipeline.processWithHealing(missingName, context);
     expect(provider.triggerRefactor).not.toHaveBeenCalled();
 
-    await pipeline.processWithHealing(missingTitle, context);
+    await pipeline.processWithHealing(missingName, context);
     expect(provider.triggerRefactor).toHaveBeenCalledTimes(1);
   });
 
@@ -113,40 +120,42 @@ describe("SelfHealingCoordinator reliability gate", () => {
     const provider = new ScriptedHealingProvider([]);
     provider.triggerRefactor.mockRejectedValueOnce(new Error("trigger failed"));
     const coordinator = new SelfHealingCoordinator(provider);
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     pipeline.healingCoordinator = coordinator;
-    await pipeline.processWithHealing(validTenderFixture, context);
+    await pipeline.processWithHealing(validPlayerFixture, context);
 
     await expect(
       pipeline.processWithHealing(
-        { tenderId: "gem:broken", externalId: "broken" },
+        { entityType: "player", playerId: "openligadb:player:broken" },
         context,
       ),
     ).rejects.toThrow("trigger failed");
-    expect(coordinator.getHealingState("gem")).toBe("recovery_failed");
-    expect(coordinator.getIncident("gem")?.evidence?.outcome).toBe("failed");
+    expect(coordinator.getHealingState("openligadb")).toBe("recovery_failed");
+    expect(coordinator.getIncident("openligadb")?.evidence?.outcome).toBe(
+      "failed",
+    );
   });
 
-  it("refuses approval until the preview passes the Tender schema canary", async () => {
+  it("refuses approval until the preview passes the football schema canary", async () => {
     const provider = new ScriptedHealingProvider([
       {
         status: "pending_answer",
-        previewResult: [{ title: "still broken" }],
+        previewResult: [{ playerName: "still broken" }],
       },
     ]);
     const coordinator = new SelfHealingCoordinator(provider);
     await coordinator.handleDrift(
-      "gem",
+      "openligadb",
       collectorId,
       "schema-drift",
-      "restore fields",
+      "restore the player card fields",
       observedAt,
     );
-    await coordinator.pollProgress("gem", observedAt);
+    await coordinator.pollProgress("openligadb", observedAt);
 
     await expect(
       coordinator.approveOrReject(
-        "gem",
+        "openligadb",
         true,
         async () => validVerification(),
         observedAt,
@@ -154,15 +163,15 @@ describe("SelfHealingCoordinator reliability gate", () => {
     ).rejects.toThrow("schema-valid preview is required");
     expect(
       coordinator.handlePreview(
-        "gem",
-        [{ title: "still broken" }],
+        "openligadb",
+        [{ playerName: "still broken" }],
         1,
         observedAt,
       ),
     ).toBe(false);
     await expect(
       coordinator.approveOrReject(
-        "gem",
+        "openligadb",
         true,
         async () => validVerification(),
         observedAt,
@@ -170,12 +179,12 @@ describe("SelfHealingCoordinator reliability gate", () => {
     ).rejects.toThrow("schema-valid preview is required");
 
     await coordinator.approveOrReject(
-      "gem",
+      "openligadb",
       false,
       async () => validVerification(),
       observedAt,
     );
-    expect(coordinator.getHealingState("gem")).toBe("rejected");
+    expect(coordinator.getHealingState("openligadb")).toBe("rejected");
     expect(provider.resumeAutomationJob).toHaveBeenCalledWith(
       collectorId,
       false,
@@ -185,7 +194,7 @@ describe("SelfHealingCoordinator reliability gate", () => {
 
   it("polls to done after approval, then reruns the same collector", async () => {
     const provider = new ScriptedHealingProvider([
-      { status: "pending_answer", previewResult: [validTenderFixture] },
+      { status: "pending_answer", previewResult: [validPlayerFixture] },
       { status: "in_progress", previewResult: [] },
       { status: "done", previewResult: [] },
     ]);
@@ -194,20 +203,25 @@ describe("SelfHealingCoordinator reliability gate", () => {
       approvalTimeoutMs: 1000,
     });
     await coordinator.handleDrift(
-      "gem",
+      "openligadb",
       collectorId,
       "schema-drift",
-      "restore fields",
+      "restore the player card fields",
       observedAt,
     );
-    const awaiting = await coordinator.pollProgress("gem", observedAt);
-    expect(awaiting.previewResult).toEqual([validTenderFixture]);
+    const awaiting = await coordinator.pollProgress("openligadb", observedAt);
+    expect(awaiting.previewResult).toEqual([validPlayerFixture]);
     expect(
-      coordinator.handlePreview("gem", awaiting.previewResult, 1, observedAt),
+      coordinator.handlePreview(
+        "openligadb",
+        awaiting.previewResult,
+        1,
+        observedAt,
+      ),
     ).toBe(true);
 
     const rerun = vi.fn(async () => validVerification());
-    await coordinator.approveOrReject("gem", true, rerun, observedAt);
+    await coordinator.approveOrReject("openligadb", true, rerun, observedAt);
 
     expect(provider.resumeAutomationJob).toHaveBeenCalledWith(
       collectorId,
@@ -216,13 +230,50 @@ describe("SelfHealingCoordinator reliability gate", () => {
     );
     expect(provider.pollRefactorProgress).toHaveBeenCalledTimes(3);
     expect(rerun).toHaveBeenCalledTimes(1);
-    expect(coordinator.getHealingState("gem")).toBe("recovered");
-    expect(coordinator.getIncident("gem")?.evidence?.verification).toEqual(
+    expect(coordinator.getHealingState("openligadb")).toBe("recovered");
+    expect(coordinator.getIncident("openligadb")?.collectorId).toBe(
+      collectorId,
+    );
+    expect(coordinator.getIncident("openligadb")?.evidence?.actions).toContain(
+      `Bright Data completed the heal for the same collector ${collectorId}`,
+    );
+    expect(
+      coordinator.getIncident("openligadb")?.evidence?.verification,
+    ).toEqual(
       expect.objectContaining({
-        validTenderCount: 1,
+        validRecordCount: 1,
         payloadHashes: ["a".repeat(64)],
       }),
     );
+  });
+
+  it("accepts an amended but schema-valid preview through the canary", async () => {
+    const provider = new ScriptedHealingProvider([
+      {
+        status: "pending_answer",
+        previewResult: [amendedPlayerFixture],
+      },
+    ]);
+    const coordinator = new SelfHealingCoordinator(provider);
+    await coordinator.handleDrift(
+      "openligadb",
+      collectorId,
+      "schema-drift",
+      "restore the player card fields",
+      observedAt,
+    );
+    await coordinator.pollProgress("openligadb", observedAt);
+    expect(coordinator.getHealingState("openligadb")).toBe("awaiting_approval");
+
+    const valid = coordinator.handlePreview(
+      "openligadb",
+      [amendedPlayerFixture],
+      1,
+      observedAt,
+    );
+
+    expect(valid).toBe(true);
+    expect(coordinator.getHealingState("openligadb")).toBe("preview_valid");
   });
 
   it("fails closed on an undocumented progress status", async () => {
@@ -231,20 +282,20 @@ describe("SelfHealingCoordinator reliability gate", () => {
     ]);
     const coordinator = new SelfHealingCoordinator(provider);
     await coordinator.handleDrift(
-      "gem",
+      "openligadb",
       collectorId,
       "schema-drift",
-      "restore fields",
+      "restore the player card fields",
       observedAt,
     );
 
-    await expect(coordinator.pollProgress("gem", observedAt)).rejects.toThrow(
-      "Unknown Bright Data self-healing status",
-    );
-    expect(coordinator.getHealingState("gem")).toBe("recovery_failed");
-    expect(coordinator.getIncident("gem")?.evidence).toMatchObject({
+    await expect(
+      coordinator.pollProgress("openligadb", observedAt),
+    ).rejects.toThrow("Unknown Bright Data self-healing status");
+    expect(coordinator.getHealingState("openligadb")).toBe("recovery_failed");
+    expect(coordinator.getIncident("openligadb")?.evidence).toMatchObject({
       outcome: "failed",
-      verification: { validTenderCount: 0, quarantinedCount: 1 },
+      verification: { validRecordCount: 0, quarantinedCount: 1 },
     });
   });
 });

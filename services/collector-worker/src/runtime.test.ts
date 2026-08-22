@@ -3,26 +3,30 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BrightDataApiError,
   MockBrightDataHealingProvider,
-  type TenderHealingProvider,
-  type TenderCollectionProvider,
+  type FootballHealingProgress,
+  type FootballHealingProvider,
 } from "@bidsentinel/brightdata";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import {
+  amendedPlayerFixture,
+  validPlayerFixture,
+} from "@bidsentinel/contracts/fixtures";
 
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 import {
+  buildMockPreviewRecord,
   createRuntimeFromEnv,
   isAuthorizedOperatorToken,
   runConfiguredCollection,
-  type BidSentinelRuntime,
+  type CardPulseRuntime,
 } from "./runtime.js";
 
 function liveRuntimeWith(
-  provider: TenderCollectionProvider,
-): BidSentinelRuntime {
-  const pipeline = new BidSentinelPipeline();
+  provider: FootballCollectionProviderLike,
+): CardPulseRuntime {
+  const pipeline = new CardPulsePipeline();
   const coordinator = new SelfHealingCoordinator(
-    new MockBrightDataHealingProvider([validTenderFixture]),
+    new MockBrightDataHealingProvider([buildMockPreviewRecord("openligadb")]),
     { pollIntervalMs: 0 },
   );
   pipeline.healingCoordinator = coordinator;
@@ -31,13 +35,27 @@ function liveRuntimeWith(
     pipeline,
     coordinator,
     collectionProvider: provider,
-    sourceId: "gem",
+    sourceId: "openligadb",
     collectorId: "c_exact",
-    targetUrl: "https://example.gov.test/tenders",
+    targetUrl: "https://data.football-demo.test/openligadb/players",
     configurationIssues: [],
     liveMutationsEnabled: false,
     operatorTokenHash: null,
   };
+}
+
+interface FootballCollectionProviderLike {
+  collect(request: {
+    sourceId: string;
+    targetUrl: string;
+    requestedAt: string;
+  }): Promise<{
+    sourceId: string;
+    collectorId: string;
+    extractorVersion: string;
+    receivedAt: string;
+    payloads: unknown[];
+  }>;
 }
 
 describe("runtime selection and live collection", () => {
@@ -59,18 +77,42 @@ describe("runtime selection and live collection", () => {
     const live = createRuntimeFromEnv({
       BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
       BRIGHT_DATA_COLLECTOR_ID: "c_exact",
-      BRIGHT_DATA_TARGET_URL: "https://example.gov.test/tenders",
-      BIDSENTINEL_SOURCE_ID: "gem",
+      BRIGHT_DATA_TARGET_URL: "https://data.football-demo.test/players",
+      CARDPULSE_SOURCE_ID: "openligadb",
     });
     expect(live.mode).toBe("live");
     expect(live.collectorId).toBe("c_exact");
     expect(live.liveMutationsEnabled).toBe(false);
     expect(live.configurationIssues).toEqual(
       expect.arrayContaining([
-        "BIDSENTINEL_ENABLE_LIVE_MUTATIONS is not true",
-        "BIDSENTINEL_OPERATOR_TOKEN must contain at least 32 characters",
+        "CARDPULSE_ENABLE_LIVE_MUTATIONS is not true",
+        "CARDPULSE_OPERATOR_TOKEN must contain at least 32 characters",
       ]),
     );
+  });
+
+  it("treats a malformed collector ID as a configuration issue and stays in mock mode", () => {
+    const runtime = createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
+      BRIGHT_DATA_COLLECTOR_ID: "collector-not-c-prefixed",
+      BRIGHT_DATA_TARGET_URL: "https://data.football-demo.test/players",
+    });
+    expect(runtime.mode).toBe("mock");
+    expect(runtime.collectorId).toBeNull();
+    expect(runtime.configurationIssues).toContain(
+      "BRIGHT_DATA_COLLECTOR_ID must be a first-class c_* collector ID",
+    );
+  });
+
+  it("honors CardPulse env overrides over the historical names", () => {
+    const runtime = createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
+      BRIGHT_DATA_COLLECTOR_ID: "c_exact",
+      BRIGHT_DATA_TARGET_URL: "https://data.football-demo.test/players",
+      CARDPULSE_SOURCE_ID: "kicker-demo",
+      BIDSENTINEL_SOURCE_ID: "openligadb",
+    });
+    expect(runtime.sourceId).toBe("kicker-demo");
   });
 
   it("enables live mutations only with the explicit flag and a strong operator token", () => {
@@ -78,12 +120,13 @@ describe("runtime selection and live collection", () => {
     const live = createRuntimeFromEnv({
       BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
       BRIGHT_DATA_COLLECTOR_ID: "c_exact",
-      BRIGHT_DATA_TARGET_URL: "https://example.gov.test/tenders",
-      BIDSENTINEL_SOURCE_ID: "gem",
-      BIDSENTINEL_ENABLE_LIVE_MUTATIONS: "true",
-      BIDSENTINEL_OPERATOR_TOKEN: operatorToken,
+      BRIGHT_DATA_TARGET_URL: "https://data.football-demo.test/players",
+      BIDSENTINEL_SOURCE_ID: "openligadb",
+      CARDPULSE_ENABLE_LIVE_MUTATIONS: "true",
+      CARDPULSE_OPERATOR_TOKEN: operatorToken,
     });
 
+    expect(live.mode).toBe("live");
     expect(live.liveMutationsEnabled).toBe(true);
     expect(live.configurationIssues).toEqual([]);
     expect(isAuthorizedOperatorToken(live, operatorToken)).toBe(true);
@@ -91,13 +134,13 @@ describe("runtime selection and live collection", () => {
     expect(JSON.stringify(live)).not.toContain(operatorToken);
   });
 
-  it("processes every row while preserving the provider collector ID", async () => {
+  it("processes every football row while preserving the provider collector ID", async () => {
     const collect = vi.fn(async () => ({
-      sourceId: "gem",
+      sourceId: "openligadb",
       collectorId: "c_exact",
       extractorVersion: "parser-v2",
-      receivedAt: validTenderFixture.observedAt,
-      payloads: [validTenderFixture, { title: "invalid row" }],
+      receivedAt: validPlayerFixture.observedAt,
+      payloads: [validPlayerFixture, { title: "invalid row" }],
     }));
     const runtime = liveRuntimeWith({ collect });
 
@@ -110,19 +153,20 @@ describe("runtime selection and live collection", () => {
     expect(summary.outcomes).toEqual(["accepted", "quarantined"]);
     expect(summary).toMatchObject({
       success: false,
-      validTenderCount: 1,
+      validRecordCount: 1,
       quarantinedCount: 1,
+      sampleEntityIds: [validPlayerFixture.playerId],
     });
   });
 
   it("rejects a batch whose collector ID does not match runtime configuration", async () => {
     const runtime = liveRuntimeWith({
       collect: async () => ({
-        sourceId: "gem",
+        sourceId: "openligadb",
         collectorId: "c_other",
         extractorVersion: "parser-v2",
-        receivedAt: validTenderFixture.observedAt,
-        payloads: [validTenderFixture],
+        receivedAt: validPlayerFixture.observedAt,
+        payloads: [validPlayerFixture],
       }),
     });
 
@@ -130,7 +174,7 @@ describe("runtime selection and live collection", () => {
       "unexpected collector ID",
     );
     expect(
-      runtime.pipeline.snapshots.list(validTenderFixture.tenderId),
+      runtime.pipeline.snapshots.list(validPlayerFixture.playerId),
     ).toEqual([]);
   });
 
@@ -147,7 +191,7 @@ describe("runtime selection and live collection", () => {
     await expect(runConfiguredCollection(runtime)).rejects.toMatchObject({
       code: "timeout",
     });
-    expect(runtime.pipeline.sourceHealth.get("gem")).toMatchObject({
+    expect(runtime.pipeline.sourceHealth.get("openligadb")).toMatchObject({
       state: "degraded",
       activeIncident: { reason: "network-error" },
     });
@@ -155,30 +199,31 @@ describe("runtime selection and live collection", () => {
   });
 
   it("approval polls Bright Data to done before rerunning the exact provider", async () => {
-    const collectedBatches = [
-      [validTenderFixture],
+    const collectedBatches: unknown[][] = [
+      [validPlayerFixture],
       [
         {
-          tenderId: validTenderFixture.tenderId,
-          externalId: validTenderFixture.externalId,
+          entityType: "player",
+          playerId: validPlayerFixture.playerId,
+          sourceUrl: validPlayerFixture.sourceUrl,
         },
       ],
-      [{ ...validTenderFixture, observedAt: "2026-08-20T05:10:00.000Z" }],
+      [amendedPlayerFixture],
     ];
     const collect = vi.fn(async () => ({
-      sourceId: "gem",
+      sourceId: "openligadb",
       collectorId: "c_exact",
       extractorVersion: "parser-v2",
-      receivedAt: "2026-08-20T05:10:00.000Z",
+      receivedAt: "2026-08-21T14:00:00.000Z",
       payloads: collectedBatches.shift() ?? [],
     }));
     const triggerRefactor = vi.fn(async () => undefined);
     const resumeAutomationJob = vi.fn(async () => undefined);
-    const progress = [
-      { status: "pending_answer", previewResult: [validTenderFixture] },
+    const progress: FootballHealingProgress[] = [
+      { status: "pending_answer", previewResult: [validPlayerFixture] },
       { status: "done", previewResult: [] },
     ];
-    const healingProvider: TenderHealingProvider = {
+    const healingProvider: FootballHealingProvider = {
       triggerRefactor,
       resumeAutomationJob,
       pollRefactorProgress: async () => {
@@ -187,19 +232,19 @@ describe("runtime selection and live collection", () => {
         return next;
       },
     };
-    const pipeline = new BidSentinelPipeline();
+    const pipeline = new CardPulsePipeline();
     const coordinator = new SelfHealingCoordinator(healingProvider, {
       pollIntervalMs: 0,
     });
     pipeline.healingCoordinator = coordinator;
-    const runtime: BidSentinelRuntime = {
+    const runtime: CardPulseRuntime = {
       mode: "live",
       pipeline,
       coordinator,
       collectionProvider: { collect },
-      sourceId: "gem",
+      sourceId: "openligadb",
       collectorId: "c_exact",
-      targetUrl: "https://example.gov.test/tenders",
+      targetUrl: "https://data.football-demo.test/openligadb/players",
       configurationIssues: [],
       liveMutationsEnabled: false,
       operatorTokenHash: null,
@@ -213,29 +258,29 @@ describe("runtime selection and live collection", () => {
     );
 
     const pending = await coordinator.pollProgress(
-      "gem",
-      "2026-08-20T05:11:00.000Z",
+      "openligadb",
+      "2026-08-21T14:01:00.000Z",
     );
     expect(
       coordinator.handlePreview(
-        "gem",
+        "openligadb",
         pending.previewResult,
         1,
-        "2026-08-20T05:11:00.000Z",
+        "2026-08-21T14:01:00.000Z",
       ),
     ).toBe(true);
     await coordinator.approveOrReject(
-      "gem",
+      "openligadb",
       true,
       () => runConfiguredCollection(runtime, { enableHealing: false }),
-      "2026-08-20T05:12:00.000Z",
+      "2026-08-21T14:02:00.000Z",
     );
 
     expect(resumeAutomationJob).toHaveBeenCalledWith("c_exact", true, {
       autoSave: true,
     });
     expect(collect).toHaveBeenCalledTimes(3);
-    expect(coordinator.getHealingState("gem")).toBe("recovered");
-    expect(coordinator.getIncident("gem")?.collectorId).toBe("c_exact");
+    expect(coordinator.getHealingState("openligadb")).toBe("recovered");
+    expect(coordinator.getIncident("openligadb")?.collectorId).toBe("c_exact");
   });
 });

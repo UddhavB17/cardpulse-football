@@ -1,14 +1,19 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { BidSentinelPipeline } from "./pipeline.js";
+import { CardPulsePipeline } from "./pipeline.js";
 import { MockBrightDataHealingProvider } from "@bidsentinel/brightdata";
-import { validTenderFixture } from "@bidsentinel/contracts/fixtures";
+import {
+  trackedPlayerId,
+  validPlayerFixture,
+} from "@bidsentinel/contracts/fixtures";
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
 import { createRequestHandler } from "./server.js";
-import { createRuntimeFromEnv, type BidSentinelRuntime } from "./runtime.js";
+import { createRuntimeFromEnv, type CardPulseRuntime } from "./runtime.js";
 
-async function startRuntimeServer(runtime: BidSentinelRuntime) {
+const SOURCE_ID = "openligadb";
+
+async function startRuntimeServer(runtime: CardPulseRuntime) {
   const server = createServer(
     createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
   );
@@ -25,28 +30,28 @@ async function stopRuntimeServer(server: ReturnType<typeof createServer>) {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-describe("BidSentinel API Server", () => {
+describe("CardPulse Football API Server", () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
-  let pipeline: BidSentinelPipeline;
+  let pipeline: CardPulsePipeline;
   let coordinator: SelfHealingCoordinator;
 
   beforeAll(async () => {
-    pipeline = new BidSentinelPipeline();
+    pipeline = new CardPulsePipeline();
     const healingProvider = new MockBrightDataHealingProvider([
-      validTenderFixture,
+      validPlayerFixture,
     ]);
     coordinator = new SelfHealingCoordinator(healingProvider, {
       pollIntervalMs: 0,
     });
     pipeline.healingCoordinator = coordinator;
 
-    const runtime: BidSentinelRuntime = {
+    const runtime: CardPulseRuntime = {
       mode: "mock",
       pipeline,
       coordinator,
       collectionProvider: null,
-      sourceId: "gem",
+      sourceId: SOURCE_ID,
       collectorId: null,
       targetUrl: null,
       configurationIssues: ["test runtime"],
@@ -71,13 +76,13 @@ describe("BidSentinel API Server", () => {
     });
   });
 
-  it("GET /health returns health metrics", async () => {
+  it("GET /health returns health metrics for cardpulse-api", async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: { service: string; status: string };
     };
-    expect(body.data.service).toBe("bidsentinel-api");
+    expect(body.data.service).toBe("cardpulse-api");
     expect(body.data.status).toBe("ok");
   });
 
@@ -85,16 +90,23 @@ describe("BidSentinel API Server", () => {
     const res = await fetch(`${baseUrl}/api/runtime`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      data: { mode: string; collectorConfigured: boolean };
+      data: {
+        mode: string;
+        domain: string;
+        collectorConfigured: boolean;
+        sourceId: string;
+      };
     };
     expect(body.data).toMatchObject({
       mode: "mock",
+      domain: "football",
       collectorConfigured: false,
+      sourceId: SOURCE_ID,
     });
   });
 
-  it("GET /api/tenders returns empty list initially (before seeder/dev collect)", async () => {
-    const res = await fetch(`${baseUrl}/api/tenders`);
+  it("GET /api/players returns empty list initially (before dev collect)", async () => {
+    const res = await fetch(`${baseUrl}/api/players`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: unknown[];
@@ -104,67 +116,146 @@ describe("BidSentinel API Server", () => {
     expect(body.pagination.total).toBe(0);
   });
 
-  it("POST /api/dev/collect?mode=valid executes a collection cycle", async () => {
+  it("POST /api/dev/collect?mode=valid seeds verified football cards", async () => {
     const res = await fetch(`${baseUrl}/api/dev/collect?mode=valid`, {
       method: "POST",
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; outcome: string };
-    expect(body.success).toBe(true);
-    expect(body.outcome).toBe("accepted");
-
-    // Fetch tenders list again
-    const listRes = await fetch(`${baseUrl}/api/tenders`);
-    const listBody = (await listRes.json()) as {
-      data: Array<{ tenderId: string }>;
+    const body = (await res.json()) as {
+      success: boolean;
+      outcomes: string[];
+      collectorId: string;
     };
-    expect(listBody.data).toHaveLength(1);
-    expect(listBody.data[0]?.tenderId).toBe("gem:2026-rail-signalling-001");
+    expect(body.success).toBe(true);
+    expect(body.outcomes.every((outcome) => outcome === "accepted")).toBe(true);
+    expect(body.collectorId).toBe("c_mock_cardpulse");
+
+    const listRes = await fetch(`${baseUrl}/api/players`);
+    const listBody = (await listRes.json()) as {
+      data: Array<{ playerId: string; stats: { goals: number } }>;
+    };
+    expect(listBody.data).toHaveLength(3);
+    // Living leaderboard: the top scorer is listed first.
+    expect(listBody.data[0]?.playerId).toBe(trackedPlayerId);
+    expect(listBody.data[0]?.stats.goals).toBe(18);
+
+    const standingsRes = await fetch(`${baseUrl}/api/standings`);
+    const standingsBody = (await standingsRes.json()) as {
+      data: Array<{ rank: number; teamName: string }>;
+    };
+    expect(standingsBody.data).toHaveLength(3);
+    expect(standingsBody.data[0]?.rank).toBe(1);
+
+    const teamsRes = await fetch(`${baseUrl}/api/teams`);
+    const teamsBody = (await teamsRes.json()) as { data: unknown[] };
+    expect(teamsBody.data).toHaveLength(3);
   });
 
-  it("GET /api/tenders/{tenderId} returns tender details", async () => {
-    const tenderId = encodeURIComponent("gem:2026-rail-signalling-001");
-    const res = await fetch(`${baseUrl}/api/tenders/${tenderId}`);
+  it("GET /api/players/{playerId} returns the living card details", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/players/${encodeURIComponent(trackedPlayerId)}`,
+    );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { data: { tenderId: string } };
-    expect(body.data.tenderId).toBe("gem:2026-rail-signalling-001");
+    const body = (await res.json()) as {
+      data: {
+        playerId: string;
+        stats: { goals: number };
+        latestSnapshot: { version: number; payloadHash: string };
+      };
+    };
+    expect(body.data.playerId).toBe(trackedPlayerId);
+    expect(body.data.stats.goals).toBe(18);
+    expect(body.data.latestSnapshot.version).toBe(1);
+    expect(body.data.latestSnapshot.payloadHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("GET /api/tenders/{tenderId} returns 404 for missing tender", async () => {
-    const res = await fetch(`${baseUrl}/api/tenders/gem%3Amissing-id`);
+  it("GET /api/players/{playerId} returns 404 for a missing player", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/players/openligadb%3Aplayer%3Amissing-id`,
+    );
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
 
-  it("POST /api/dev/collect?mode=drift quarantines invalid row and triggers healing", async () => {
+  it("POST /api/dev/collect?mode=amended records a real semantic stat change", async () => {
+    const res = await fetch(`${baseUrl}/api/dev/collect?mode=amended`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      outcomes: string[];
+    };
+    expect(body.success).toBe(true);
+
+    const changesRes = await fetch(`${baseUrl}/api/changes`);
+    const changesBody = (await changesRes.json()) as {
+      data: Array<{
+        entityId: string;
+        entityType: string;
+        changes: Array<{ kind: string; before: number; after: number }>;
+      }>;
+    };
+    expect(changesBody.data).toHaveLength(1);
+    const event = changesBody.data[0];
+    expect(event?.entityId).toBe(trackedPlayerId);
+    expect(event?.entityType).toBe("player");
+    expect(event?.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "goals", before: 18, after: 21 }),
+      ]),
+    );
+
+    const detailRes = await fetch(
+      `${baseUrl}/api/players/${encodeURIComponent(trackedPlayerId)}`,
+    );
+    const detailBody = (await detailRes.json()) as {
+      data: { stats: { goals: number }; latestSnapshot: { version: number } };
+    };
+    expect(detailBody.data.stats.goals).toBe(21);
+    expect(detailBody.data.latestSnapshot.version).toBe(2);
+  });
+
+  it("POST /api/dev/collect?mode=drift quarantines the batch, preserves the last verified card, and triggers healing", async () => {
     const res = await fetch(`${baseUrl}/api/dev/collect?mode=drift`, {
       method: "POST",
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { outcome: string };
-    expect(body.outcome).toBe("quarantined");
+    const body = (await res.json()) as {
+      outcomes: string[];
+      healingState: string;
+    };
+    expect(body.outcomes.every((o) => o === "quarantined")).toBe(true);
+    expect(body.healingState).toBe("healing_requested");
 
-    // Check quarantines list
+    // The last verified card survives the layout drift untouched.
+    const detailRes = await fetch(
+      `${baseUrl}/api/players/${encodeURIComponent(trackedPlayerId)}`,
+    );
+    const detailBody = (await detailRes.json()) as {
+      data: { stats: { goals: number }; latestSnapshot: { version: number } };
+    };
+    expect(detailBody.data.stats.goals).toBe(21);
+    expect(detailBody.data.latestSnapshot.version).toBe(2);
+
     const qRes = await fetch(`${baseUrl}/api/quarantines`);
     const qBody = (await qRes.json()) as { data: unknown[] };
-    expect(qBody.data).toHaveLength(1);
+    expect(qBody.data.length).toBeGreaterThan(0);
 
-    // Verify source health transitioned to recovering
     const sRes = await fetch(`${baseUrl}/api/sources`);
     const sBody = (await sRes.json()) as { data: Array<{ state: string }> };
     expect(sBody.data[0]?.state).toBe("recovering");
   });
 
-  it("POST /api/dev/heal-progress and POST /api/dev/approve recovery", async () => {
-    // The deterministic mock makes a preview available on the first poll.
+  it("POST /api/dev/heal-progress and POST /api/dev/approve recover the same mock collector", async () => {
     let res = await fetch(`${baseUrl}/api/dev/heal-progress`, {
       method: "POST",
     });
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe("pending_answer");
 
-    // Approval is forbidden until the Bright Data preview passes the Tender schema canary.
+    // Approval is forbidden until the preview passes the football schema canary.
     res = await fetch(`${baseUrl}/api/dev/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -175,7 +266,11 @@ describe("BidSentinel API Server", () => {
     res = await fetch(`${baseUrl}/api/dev/validate-preview`, {
       method: "POST",
     });
-    const previewBody = (await res.json()) as { healingState: string };
+    const previewBody = (await res.json()) as {
+      success: boolean;
+      healingState: string;
+    };
+    expect(previewBody.success).toBe(true);
     expect(previewBody.healingState).toBe("preview_valid");
 
     res = await fetch(`${baseUrl}/api/dev/approve`, {
@@ -186,36 +281,99 @@ describe("BidSentinel API Server", () => {
     const approveBody = (await res.json()) as { healingState: string };
     expect(approveBody.healingState).toBe("recovered");
 
-    const healingRes = await fetch(`${baseUrl}/api/healing/gem`);
+    const healingRes = await fetch(`${baseUrl}/api/healing/${SOURCE_ID}`);
     const healingBody = (await healingRes.json()) as {
-      data: { state: string; incident: { collectorId: string } };
+      data: {
+        state: string;
+        incident: { collectorId: string; evidence: { outcome: string } | null };
+      };
     };
     expect(healingBody.data.state).toBe("recovered");
-    expect(healingBody.data.incident.collectorId).toBe("c_mock_dev");
+    expect(healingBody.data.incident.collectorId).toBe("c_mock_cardpulse");
+    expect(healingBody.data.incident.evidence?.outcome).toBe("recovered");
 
-    // Check health state is back to healthy
     const sRes = await fetch(`${baseUrl}/api/sources`);
     const sBody = (await sRes.json()) as { data: Array<{ state: string }> };
     expect(sBody.data[0]?.state).toBe("healthy");
+
+    // The recovered rerun re-verified the amended card.
+    const detailRes = await fetch(
+      `${baseUrl}/api/players/${encodeURIComponent(trackedPlayerId)}`,
+    );
+    const detailBody = (await detailRes.json()) as {
+      data: { latestSnapshot: { version: number } };
+    };
+    expect(detailBody.data.latestSnapshot.version).toBeGreaterThanOrEqual(2);
+  });
+
+  it("rejects unsupported dev collect modes", async () => {
+    const res = await fetch(`${baseUrl}/api/dev/collect?mode=surprise`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("invalid_request");
   });
 });
 
-describe("BidSentinel live mutation authorization", () => {
+describe("CardPulse source-health projection", () => {
+  it("keeps the public source contract valid when healing starts after a healthy snapshot", async () => {
+    const runtime = createRuntimeFromEnv({
+      CARDPULSE_SOURCE_ID: SOURCE_ID,
+    });
+    runtime.pipeline.process(validPlayerFixture, {
+      sourceId: SOURCE_ID,
+      extractorVersion: "fixture-v1",
+      observedAt: validPlayerFixture.observedAt,
+    });
+    await runtime.coordinator.handleDrift(
+      SOURCE_ID,
+      "c_mock_cardpulse",
+      "schema-drift",
+      "The player table changed structure",
+      validPlayerFixture.observedAt,
+    );
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const response = await fetch(`${baseUrl}/api/sources`);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        data: Array<{
+          state: string;
+          activeIncident: { reason: string; detail: string } | null;
+        }>;
+      };
+      expect(body.data[0]).toMatchObject({
+        state: "recovering",
+        activeIncident: {
+          reason: "schema-drift",
+          detail: "The player table changed structure",
+        },
+      });
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+});
+
+describe("CardPulse live mutation authorization", () => {
   const liveEnv = {
     BRIGHT_DATA_API_TOKEN: "bright-data-token",
     BRIGHT_DATA_COLLECTOR_ID: "c_exact",
-    BRIGHT_DATA_TARGET_URL: "https://example.gov.test/tenders",
-    BIDSENTINEL_SOURCE_ID: "gem",
+    BRIGHT_DATA_TARGET_URL:
+      "https://data.football-demo.test/openligadb/players",
+    CARDPULSE_SOURCE_ID: SOURCE_ID,
   };
 
   it("fails closed before a provider call when live mutations are disabled", async () => {
     const runtime = createRuntimeFromEnv(liveEnv);
     const collect = vi.fn(async () => ({
-      sourceId: "gem",
+      sourceId: SOURCE_ID,
       collectorId: "c_exact",
       extractorVersion: "parser-v2",
-      receivedAt: validTenderFixture.observedAt,
-      payloads: [validTenderFixture],
+      receivedAt: validPlayerFixture.observedAt,
+      payloads: [validPlayerFixture],
     }));
     runtime.collectionProvider = { collect };
     const { server, baseUrl } = await startRuntimeServer(runtime);
@@ -231,19 +389,19 @@ describe("BidSentinel live mutation authorization", () => {
     }
   });
 
-  it("rejects the wrong operator token and accepts the configured token", async () => {
+  it("rejects the wrong operator token and accepts the configured CardPulse header", async () => {
     const operatorToken = "operator-token-with-at-least-32-chars";
     const runtime = createRuntimeFromEnv({
       ...liveEnv,
-      BIDSENTINEL_ENABLE_LIVE_MUTATIONS: "true",
-      BIDSENTINEL_OPERATOR_TOKEN: operatorToken,
+      CARDPULSE_ENABLE_LIVE_MUTATIONS: "true",
+      CARDPULSE_OPERATOR_TOKEN: operatorToken,
     });
     const collect = vi.fn(async () => ({
-      sourceId: "gem",
+      sourceId: SOURCE_ID,
       collectorId: "c_exact",
       extractorVersion: "parser-v2",
-      receivedAt: validTenderFixture.observedAt,
-      payloads: [validTenderFixture],
+      receivedAt: validPlayerFixture.observedAt,
+      payloads: [validPlayerFixture],
     }));
     runtime.collectionProvider = { collect };
     const { server, baseUrl } = await startRuntimeServer(runtime);
@@ -251,14 +409,14 @@ describe("BidSentinel live mutation authorization", () => {
     try {
       const denied = await fetch(`${baseUrl}/api/dev/collect?mode=live`, {
         method: "POST",
-        headers: { "X-BidSentinel-Operator-Token": "wrong-token" },
+        headers: { "X-CardPulse-Operator-Token": "wrong-token" },
       });
       expect(denied.status).toBe(403);
       expect(collect).not.toHaveBeenCalled();
 
       const allowed = await fetch(`${baseUrl}/api/dev/collect?mode=live`, {
         method: "POST",
-        headers: { "X-BidSentinel-Operator-Token": operatorToken },
+        headers: { "X-CardPulse-Operator-Token": operatorToken },
       });
       expect(allowed.status).toBe(200);
       expect(collect).toHaveBeenCalledTimes(1);

@@ -7,30 +7,32 @@ import { randomUUID } from "node:crypto";
 import type { ZodTypeAny } from "zod";
 import {
   ApiHealthResponseSchema,
-  TenderListResponseSchema,
-  TenderDetailResponseSchema,
+  PlayerListResponseSchema,
+  PlayerDetailResponseSchema,
+  TeamListResponseSchema,
+  StandingsListResponseSchema,
   ChangeEventListResponseSchema,
   SourceHealthListResponseSchema,
   QuarantineListResponseSchema,
+  RuntimeStatusResponseSchema,
+  type FootballRecord,
+  type FootballSnapshot,
+  type PlayerSummary,
 } from "@bidsentinel/contracts";
-import {
-  validTenderFixture,
-  tenderWithCorrigendumFixture,
-} from "@bidsentinel/contracts/fixtures";
+import { demoRecordsFor } from "@bidsentinel/contracts/fixtures";
 import { hashPayload } from "@bidsentinel/validation";
-import type { BidSentinelPipeline } from "./pipeline.js";
+import type { CardPulsePipeline } from "./pipeline.js";
 import type { SelfHealingCoordinator } from "./healing-coordinator.js";
 import {
   createRuntimeFromEnv,
   isAuthorizedOperatorToken,
   runConfiguredCollection,
-  type BidSentinelRuntime,
+  type CardPulseRuntime,
 } from "./runtime.js";
 
-const runtime = createRuntimeFromEnv();
-const { pipeline, coordinator } = runtime;
+const MOCK_DEV_COLLECTOR_ID = "c_mock_cardpulse";
+const OPERATOR_HEADERS = ["x-cardpulse-operator-token"] as const;
 
-// Custom HTTP Errors
 class HttpError extends Error {
   constructor(
     public readonly code: string,
@@ -73,30 +75,44 @@ class ForbiddenError extends HttpError {
   }
 }
 
+/** Structurally breaks a demo batch to emulate page-layout drift. */
+function driftRecords(sourceId: string): unknown[] {
+  return demoRecordsFor("valid").map((record): unknown => {
+    const broken: Record<string, unknown> = reattribute(record, sourceId);
+    if (record.entityType === "player") {
+      delete broken.playerName;
+      delete broken.stats;
+    } else if (record.entityType === "team") {
+      delete broken.name;
+    } else {
+      delete broken.rank;
+    }
+    return broken;
+  });
+}
+
 export function createRequestHandler(
-  pipelineInstance: BidSentinelPipeline,
+  pipelineInstance: CardPulsePipeline,
   coordinatorInstance: SelfHealingCoordinator,
-  runtimeInstance?: BidSentinelRuntime,
+  runtimeInstance?: CardPulseRuntime,
 ) {
-  const activeRuntime: BidSentinelRuntime = runtimeInstance ?? {
-    mode: "mock",
-    pipeline: pipelineInstance,
-    coordinator: coordinatorInstance,
-    collectionProvider: null,
-    sourceId: "gem",
-    collectorId: null,
-    targetUrl: null,
-    configurationIssues: [
-      "Live runtime was not supplied to the request handler",
-    ],
-    liveMutationsEnabled: false,
-    operatorTokenHash: null,
-  };
+  const activeRuntime: CardPulseRuntime =
+    runtimeInstance ??
+    (() => {
+      const runtime = createRuntimeFromEnv({});
+      return {
+        ...runtime,
+        pipeline: pipelineInstance,
+        coordinator: coordinatorInstance,
+        configurationIssues: [
+          "Live runtime was not supplied to the request handler",
+        ],
+      };
+    })();
   return async (req: IncomingMessage, res: ServerResponse) => {
     const generatedAt = new Date().toISOString();
     const requestId = `req-${randomUUID().replace(/-/g, "").substring(0, 15)}`;
 
-    // Set CORS headers
     const origin = req.headers.origin;
     const allowedOrigins = [
       "http://localhost:4173",
@@ -110,10 +126,9 @@ export function createRequestHandler(
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Content-Type, X-BidSentinel-Operator-Token",
+        "Content-Type, X-CardPulse-Operator-Token",
       );
     } else if (!origin) {
-      // Default fallback for client requests lacking origin header in local development
       res.setHeader("Access-Control-Allow-Origin", "*");
     }
 
@@ -149,28 +164,30 @@ export function createRequestHandler(
         `http://${req.headers.host || "localhost"}`,
       );
       const path = url.pathname;
+      const operatorTokenFrom = (): string | undefined => {
+        for (const header of OPERATOR_HEADERS) {
+          const value = req.headers[header];
+          if (typeof value === "string" && value !== "") return value;
+        }
+        return undefined;
+      };
       const requireLiveMutationAuthorization = () => {
         if (activeRuntime.mode !== "live") return;
         if (!activeRuntime.liveMutationsEnabled) {
           throw new ForbiddenError("Live mutations are disabled");
         }
-        const headerValue = req.headers["x-bidsentinel-operator-token"];
-        const suppliedToken = Array.isArray(headerValue)
-          ? undefined
-          : headerValue;
-        if (!isAuthorizedOperatorToken(activeRuntime, suppliedToken)) {
+        if (!isAuthorizedOperatorToken(activeRuntime, operatorTokenFrom())) {
           throw new ForbiddenError("Valid operator authorization is required");
         }
       };
 
-      // 1. GET /health
       if (path === "/health") {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
         const body = ApiHealthResponseSchema.parse({
           data: {
             schemaVersion: 1,
-            service: "bidsentinel-api",
+            service: "cardpulse-api",
             status: "ok",
           },
           generatedAt,
@@ -183,8 +200,11 @@ export function createRequestHandler(
         if (req.method !== "GET") {
           throw new MethodNotAllowedError("Method not allowed");
         }
-        sendJson(200, {
+        const body = RuntimeStatusResponseSchema.parse({
           data: {
+            schemaVersion: 1,
+            service: "cardpulse-api",
+            domain: "football",
             mode: activeRuntime.mode,
             sourceId: activeRuntime.sourceId,
             collectorConfigured: activeRuntime.collectorId !== null,
@@ -194,6 +214,7 @@ export function createRequestHandler(
           },
           generatedAt,
         });
+        sendJson(200, body);
         return;
       }
 
@@ -234,77 +255,38 @@ export function createRequestHandler(
         return;
       }
 
-      // 2. GET /api/tenders
-      if (path === "/api/tenders") {
+      if (path === "/api/players") {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
 
-        const tenderIds = pipelineInstance.snapshots.listUniqueTenderIds();
-        const tenders = tenderIds.map((tid: string) => {
-          const snaps = pipelineInstance.snapshots.list(tid);
-          const latest = snaps[snaps.length - 1];
-          if (!latest) throw new Error("Snapshot not found");
-          return {
-            schemaVersion: 1,
-            tenderId: latest.tenderId,
-            sourceId: latest.sourceId,
-            externalId: latest.tender.externalId,
-            title: latest.tender.title,
-            buyer: latest.tender.buyer,
-            status: latest.tender.status,
-            publishedAt: latest.tender.publishedAt,
-            submissionDeadline: latest.tender.submissionDeadline,
-            url: latest.tender.url,
-            estimatedValue: latest.tender.estimatedValue,
-            observedAt: latest.observedAt,
-            latestSnapshot: {
-              snapshotId: latest.snapshotId,
-              version: latest.version,
-            },
-            documentCount: latest.tender.documents.length,
-            corrigendumCount: latest.tender.corrigenda.length,
-          };
-        });
-
-        // Sort: observedAt desc, then tenderId asc
-        tenders.sort(
-          (
-            a: { observedAt: string; tenderId: string },
-            b: { observedAt: string; tenderId: string },
-          ) => {
-            const timeA = Date.parse(a.observedAt);
-            const timeB = Date.parse(b.observedAt);
-            if (timeA !== timeB) return timeB - timeA;
-            return a.tenderId.localeCompare(b.tenderId);
-          },
-        );
+        const players = playerSummaries(pipelineInstance);
 
         const paginated = paginate(
-          tenders,
+          players,
           url,
-          TenderListResponseSchema,
+          PlayerListResponseSchema,
           generatedAt,
         );
         sendJson(200, paginated);
         return;
       }
 
-      // 3. GET /api/tenders/{tenderId}
-      if (path.startsWith("/api/tenders/")) {
+      if (path.startsWith("/api/players/")) {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
-        const encodedTenderId = path.substring("/api/tenders/".length);
-        const tenderId = decodeURIComponent(encodedTenderId);
+        const entityId = decodeURIComponent(
+          path.substring("/api/players/".length),
+        );
 
-        const snaps = pipelineInstance.snapshots.list(tenderId);
+        const snaps = pipelineInstance.snapshots.list(entityId);
         const latest = snaps[snaps.length - 1];
-        if (!latest) {
-          throw new NotFoundError(`Tender ${tenderId} was not found`);
+        if (!latest || latest.record.entityType !== "player") {
+          throw new NotFoundError(`Player ${entityId} was not found`);
         }
 
-        const body = TenderDetailResponseSchema.parse({
+        const body = PlayerDetailResponseSchema.parse({
           data: {
-            ...latest.tender,
+            ...latest.record,
             latestSnapshot: {
               snapshotId: latest.snapshotId,
               version: latest.version,
@@ -317,13 +299,61 @@ export function createRequestHandler(
         return;
       }
 
-      // 4. GET /api/changes
+      if (path === "/api/teams") {
+        if (req.method !== "GET")
+          throw new MethodNotAllowedError("Method not allowed");
+
+        const teams = latestSnapshotsOfType(pipelineInstance, "team")
+          .map((latest) => ({
+            ...latest.record,
+            latestSnapshot: {
+              snapshotId: latest.snapshotId,
+              version: latest.version,
+            },
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        const paginated = paginate(
+          teams,
+          url,
+          TeamListResponseSchema,
+          generatedAt,
+        );
+        sendJson(200, paginated);
+        return;
+      }
+
+      if (path === "/api/standings") {
+        if (req.method !== "GET")
+          throw new MethodNotAllowedError("Method not allowed");
+
+        const standings = latestSnapshotsOfType(pipelineInstance, "standing")
+          .map((latest) => ({
+            ...latest.record,
+            latestSnapshot: {
+              snapshotId: latest.snapshotId,
+              version: latest.version,
+            },
+          }))
+          .sort(
+            (a, b) => a.rank - b.rank || a.teamName.localeCompare(b.teamName),
+          );
+
+        const paginated = paginate(
+          standings,
+          url,
+          StandingsListResponseSchema,
+          generatedAt,
+        );
+        sendJson(200, paginated);
+        return;
+      }
+
       if (path === "/api/changes") {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
         const changes = pipelineInstance.changeEvents.list();
 
-        // Sort: detectedAt desc, then changeEventId asc
         changes.sort((a, b) => {
           const timeA = Date.parse(a.detectedAt);
           const timeB = Date.parse(b.detectedAt);
@@ -341,7 +371,6 @@ export function createRequestHandler(
         return;
       }
 
-      // 5. GET /api/sources
       if (path === "/api/sources") {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
@@ -353,6 +382,7 @@ export function createRequestHandler(
 
           const healingState = coordinatorInstance.getHealingState(sid);
           let state = rawHealth.state;
+          let activeIncident = rawHealth.activeIncident;
           const recoveringStates = [
             "healing_requested",
             "awaiting_approval",
@@ -362,13 +392,32 @@ export function createRequestHandler(
           ];
           if (recoveringStates.includes(healingState)) {
             state = "recovering";
+            const incident = coordinatorInstance.getIncident(sid);
+            if (activeIncident === null && incident !== undefined) {
+              activeIncident = {
+                incidentId: incident.incidentId,
+                openedAt: incident.openedAt,
+                reason: "schema-drift",
+                detail: incident.prompt ?? incident.reason,
+              };
+            }
           } else if (healingState === "recovered") {
             state = "healthy";
+            activeIncident = null;
           } else if (
             healingState === "recovery_failed" ||
             healingState === "rejected"
           ) {
             state = "quarantined";
+            const incident = coordinatorInstance.getIncident(sid);
+            if (activeIncident === null && incident !== undefined) {
+              activeIncident = {
+                incidentId: incident.incidentId,
+                openedAt: incident.openedAt,
+                reason: "schema-drift",
+                detail: incident.prompt ?? incident.reason,
+              };
+            }
           }
 
           const incident = coordinatorInstance.getIncident(sid);
@@ -378,11 +427,11 @@ export function createRequestHandler(
           return {
             ...rawHealth,
             state,
+            activeIncident,
             latestRecoveryEvidence,
           };
         });
 
-        // Sort: sourceId asc
         sources.sort((a: { sourceId: string }, b: { sourceId: string }) =>
           a.sourceId.localeCompare(b.sourceId),
         );
@@ -397,13 +446,11 @@ export function createRequestHandler(
         return;
       }
 
-      // 6. GET /api/quarantines
       if (path === "/api/quarantines") {
         if (req.method !== "GET")
           throw new MethodNotAllowedError("Method not allowed");
         const quarantines = pipelineInstance.quarantines.list();
 
-        // Sort: observedAt desc, then quarantineId asc
         quarantines.sort(
           (
             a: { observedAt: string; quarantineId: string },
@@ -426,7 +473,6 @@ export function createRequestHandler(
         return;
       }
 
-      // 7. POST /api/dev/collect
       if (path === "/api/dev/collect") {
         if (req.method !== "POST")
           throw new MethodNotAllowedError("Method not allowed");
@@ -454,39 +500,43 @@ export function createRequestHandler(
           );
         }
 
-        const sourceId = activeRuntime.sourceId;
-        let payload: unknown;
-        if (mode === "valid") {
-          payload = { ...validTenderFixture, sourceId };
-        } else if (mode === "drift") {
-          payload = {
-            tenderId: `${sourceId}:2026-rail-signalling-001`,
-            externalId: "2026-rail-signalling-001",
-            url: "https://example.gov.test/tenders/001",
-            observedAt: new Date().toISOString(),
-          };
-        } else if (mode === "amended") {
-          payload = { ...tenderWithCorrigendumFixture, sourceId };
-        } else {
+        if (!["valid", "drift", "amended"].includes(mode)) {
           throw new BadRequestError(`Unsupported collect mode: ${mode}`);
         }
 
-        const context = {
-          sourceId,
-          collectorId: "c_mock_dev",
-          extractorVersion: "dev-collector",
-          observedAt: new Date().toISOString(),
-        };
+        const sourceId = activeRuntime.sourceId;
+        const observedAt = new Date().toISOString();
+        const payloads =
+          mode === "drift"
+            ? driftRecords(sourceId)
+            : mode === "amended"
+              ? amendBatchForSource(sourceId)
+              : validBatchForSource(sourceId);
 
-        const result = await pipelineInstance.processWithHealing(
-          payload,
-          context,
+        const results = await pipelineInstance.processBatchWithHealing(
+          payloads,
+          {
+            sourceId,
+            collectorId: MOCK_DEV_COLLECTOR_ID,
+            extractorVersion: "dev-collector",
+            observedAt,
+          },
+          1,
         );
-        sendJson(200, { success: true, mode, outcome: result.outcome });
+
+        const accepted = results.filter(
+          (result) => result.outcome === "accepted",
+        ).length;
+        sendJson(200, {
+          success: accepted > 0 && accepted === results.length,
+          mode,
+          outcomes: results.map((result) => result.outcome),
+          collectorId: MOCK_DEV_COLLECTOR_ID,
+          healingState: coordinatorInstance.getHealingState(sourceId),
+        });
         return;
       }
 
-      // 8. POST /api/dev/heal-progress
       if (path === "/api/dev/heal-progress") {
         if (req.method !== "POST")
           throw new MethodNotAllowedError("Method not allowed");
@@ -551,7 +601,6 @@ export function createRequestHandler(
         return;
       }
 
-      // 9. POST /api/dev/approve
       if (path === "/api/dev/approve") {
         if (req.method !== "POST")
           throw new MethodNotAllowedError("Method not allowed");
@@ -600,23 +649,36 @@ export function createRequestHandler(
               enableHealing: false,
             });
           }
-          const result = pipelineInstance.process(
-            { ...validTenderFixture, sourceId: activeRuntime.sourceId },
+          // A mock rerun emulates a full collection cycle against the
+          // deterministic healed roster, matching the verified batch size.
+          const results = await pipelineInstance.processBatchWithHealing(
+            amendBatchForSource(activeRuntime.sourceId),
             {
               sourceId: activeRuntime.sourceId,
-              collectorId: "c_mock_dev",
+              collectorId: MOCK_DEV_COLLECTOR_ID,
               extractorVersion: "dev-collector",
               observedAt: new Date().toISOString(),
             },
+            1,
+            false,
+          );
+          const acceptedResults = results.filter(
+            (result) => result.outcome === "accepted",
           );
           return {
-            success: result.outcome === "accepted",
-            validTenderCount: result.outcome === "accepted" ? 1 : 0,
-            quarantinedCount: result.outcome === "quarantined" ? 1 : 0,
-            sampleTenderIds:
-              result.outcome === "accepted" ? [result.tender.tenderId] : [],
-            payloadHashes:
-              result.outcome === "accepted" ? [hashPayload(result.tender)] : [],
+            success:
+              results.length > 0 && acceptedResults.length === results.length,
+            validRecordCount: acceptedResults.length,
+            quarantinedCount: results.length - acceptedResults.length,
+            sampleEntityIds: acceptedResults
+              .map((result) =>
+                result.outcome === "accepted" ? result.entityId : "",
+              )
+              .filter(Boolean)
+              .slice(0, 20),
+            payloadHashes: acceptedResults.map((result) =>
+              result.outcome === "accepted" ? hashPayload(result.record) : "",
+            ),
           };
         };
 
@@ -656,6 +718,76 @@ export function createRequestHandler(
       }
     }
   };
+}
+
+function validBatchForSource(sourceId: string): unknown[] {
+  return demoRecordsFor("valid").map((record) => reattribute(record, sourceId));
+}
+
+function amendBatchForSource(sourceId: string): unknown[] {
+  return demoRecordsFor("amended").map((record) =>
+    reattribute(record, sourceId),
+  );
+}
+
+/** Dev batches always carry the runtime source so validation can attribute them. */
+function reattribute(
+  record: Record<string, unknown>,
+  sourceId: string,
+): Record<string, unknown> {
+  const copy: Record<string, unknown> = structuredClone(record);
+  copy.sourceId = sourceId;
+  return copy;
+}
+
+type EntityType = FootballRecord["entityType"];
+
+function latestSnapshotsOfType<K extends EntityType>(
+  pipeline: CardPulsePipeline,
+  entityType: K,
+): Array<
+  FootballSnapshot & { record: Extract<FootballRecord, { entityType: K }> }
+> {
+  const matches: Array<
+    FootballSnapshot & { record: Extract<FootballRecord, { entityType: K }> }
+  > = [];
+  for (const entityId of pipeline.snapshots.listUniqueEntityIds()) {
+    const snaps = pipeline.snapshots.list(entityId);
+    const latest = snaps[snaps.length - 1];
+    if (latest !== undefined && latest.record.entityType === entityType) {
+      matches.push(
+        latest as FootballSnapshot & {
+          record: Extract<FootballRecord, { entityType: K }>;
+        },
+      );
+    }
+  }
+  return matches;
+}
+
+function playerSummaries(pipeline: CardPulsePipeline): PlayerSummary[] {
+  return latestSnapshotsOfType(pipeline, "player")
+    .map((latest) => ({
+      schemaVersion: 1 as const,
+      playerId: latest.record.playerId,
+      sourceId: latest.record.sourceId,
+      playerName: latest.record.playerName,
+      team: latest.record.team,
+      position: latest.record.position,
+      shirtNumber: latest.record.shirtNumber,
+      season: latest.record.season,
+      stats: latest.record.stats,
+      observedAt: latest.record.observedAt,
+      latestSnapshot: {
+        snapshotId: latest.snapshotId,
+        version: latest.version,
+      },
+    }))
+    .sort(
+      (a, b) =>
+        b.stats.goals - a.stats.goals ||
+        a.playerName.localeCompare(b.playerName),
+    );
 }
 
 function paginate(
@@ -716,13 +848,14 @@ async function readBodyText(req: IncomingMessage): Promise<string> {
 if (process.env.NODE_ENV !== "test") {
   const parsedPort = Number.parseInt(process.env.PORT ?? "4321", 10);
   const port = Number.isFinite(parsedPort) ? parsedPort : 4321;
+  const runtime = createRuntimeFromEnv();
   const server = createServer(
-    createRequestHandler(pipeline, coordinator, runtime),
+    createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
   );
 
   server.listen(port, "127.0.0.1", () => {
     console.warn(
-      `BidSentinel backend API listening on http://127.0.0.1:${port} (${runtime.mode} mode)`,
+      `CardPulse Football backend API listening on http://127.0.0.1:${port} (${runtime.mode} mode)`,
     );
   });
 }
