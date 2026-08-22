@@ -1,5 +1,7 @@
 # CardPulse Football
 
+[![CI](https://github.com/UddhavB17/cardpulse-football/actions/workflows/ci.yml/badge.svg)](https://github.com/UddhavB17/cardpulse-football/actions/workflows/ci.yml)
+
 CardPulse turns scraped football statistics into animated, game-style player
 cards — and keeps the data trustworthy when the source page changes shape.
 
@@ -70,6 +72,17 @@ The main flow is:
 Workspace package names still use the historical `@bidsentinel` scope to keep
 the migration reviewable; all product-facing names and runtime contracts are
 CardPulse Football.
+
+## Hackathon submission artifacts
+
+- [Example structured player output](examples/structured-output.json)
+- [One-minute demo runbook](docs/demo-runbook.md)
+- [Live Scraper Studio evidence checklist](evidence/README.md)
+- Public repository: <https://github.com/UddhavB17/cardpulse-football>
+
+The demo video URL and redacted live `c_*` evidence must be added before the
+submission form is filed. They are intentionally not represented as complete
+until those artifacts exist.
 
 ## Run locally
 
@@ -145,6 +158,14 @@ marks, or an OpenLigaDB data dump.
 Before adding another real source, verify its terms, robots policy, rate limits,
 and redistribution rights. Keep source adapters isolated so one site's layout
 or policy does not contaminate the canonical football model.
+
+## AI assistance disclosure
+
+Codex and OpenCode coding agents were used during implementation, testing, and
+review. The team selected the product direction and architecture, inspected the
+generated changes, exercised the complete browser workflow, and verified the
+repository with the automated checks below. Team members are responsible for
+understanding and explaining the submitted code and technical decisions.
 
 ## Verification
 
