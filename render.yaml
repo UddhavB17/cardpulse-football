@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: bidsentinel-backend
+    runtime: node
+    buildCommand: pnpm install && pnpm --filter @bidsentinel/collector-worker... build
+    startCommand: pnpm --filter @bidsentinel/collector-worker start
+    envVars:
+      - key: PORT
+        value: "4321"
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_ENV
+        value: production
+      - key: CARDPULSE_SOURCE_ID
+        value: openligadb
+      # Live mode environment variables (configure these in Render dashboard if executing live collection cycles)
+      # - key: BRIGHT_DATA_API_TOKEN
+      #   value: your-api-token
+      # - key: BRIGHT_DATA_COLLECTOR_ID
+      #   value: your-collector-id
+      # - key: BRIGHT_DATA_TARGET_URL
+      #   value: your-target-url

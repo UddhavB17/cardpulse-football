@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "buildCommand": "pnpm --filter @bidsentinel/web... build",
+  "outputDirectory": "dist",
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://YOUR_RENDER_BACKEND_URL.onrender.com/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://YOUR_RENDER_BACKEND_URL.onrender.com/health"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

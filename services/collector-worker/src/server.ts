@@ -853,9 +853,10 @@ if (process.env.NODE_ENV !== "test") {
     createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
   );
 
-  server.listen(port, "127.0.0.1", () => {
+  const host = process.env.HOST ?? "0.0.0.0";
+  server.listen(port, host, () => {
     console.warn(
-      `CardPulse Football backend API listening on http://127.0.0.1:${port} (${runtime.mode} mode)`,
+      `CardPulse Football backend API listening on http://${host}:${port} (${runtime.mode} mode)`,
     );
   });
 }
