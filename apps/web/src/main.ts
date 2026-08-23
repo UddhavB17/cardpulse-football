@@ -1,57 +1,66 @@
-// CardPulse Football — single-page demo orchestrator.
+// CardPulse Football — searchable card generator orchestrator.
 //
-// Every visual phase of the generate/heal flows is gated by resolved async
-// work against the data client; presentation dwell times only pace what the
-// viewer sees, they never fake completion.
+// Every visual phase of the generation rail is gated by resolved network
+// work: the five operations advance only when the requests behind them
+// resolve, never on timers. Failures preserve the last printed card and are
+// always surfaced truthfully; demo data exists only behind its own explicit
+// button and stays labelled everywhere it appears.
 
 import type {
-  CardPulseDataClient,
-  CollectionMode,
-  DashboardSnapshot,
+  CardRecord,
+  FootballApiClient,
+  GenerateOutcome,
 } from "./data-client";
 import {
   DataClientError,
-  FixtureCardPulseDataClient,
-  HttpCardPulseDataClient,
+  DemoFootballApiClient,
+  HttpFootballApiClient,
 } from "./data-client";
 import {
-  hydrateFlowState,
+  RAIL_LABELS,
+  RAIL_STEPS,
+  completedSteps,
   initialFlowState,
-  isChromeGlitched,
   transition,
-  type FlowEvent,
   type FlowState,
 } from "./football/flow";
+import { buildCardBundle } from "./football/mapping";
+import type { SourceHealthSummary } from "./data-client";
 import {
-  buildClubViews,
-  buildPlayerCard,
-  buildReliabilityView,
-  describeHealing,
-  describeStatChange,
-  isCompromisedState,
-  resolveDataLabel,
-  resolveModeChip,
-  resolveStandingsMode,
-  resolveTeamSectionState,
-  standingsTableCopy,
-  type SourceHealthLike,
-} from "./football/mapping";
-import { buildSeasonTable, clubForId } from "./football/content";
+  announceResultState,
+  dedupeHits,
+  firstMatchSpan,
+  handleSearchKey,
+  isSearchableQuery,
+  normalizeQuery,
+  resolveResultState,
+  type SearchOption,
+} from "./football/search";
+import {
+  SEASON_KEYS,
+  SEASON_UNAVAILABLE_MESSAGE,
+  buildCompareDeltas,
+  buildSeasonOptions,
+  isInProgressSeason,
+  latestAvailableSeason,
+  parseSeasonKey,
+  seasonLabel,
+  type StatTotalsLike,
+} from "./football/seasons";
+import type {
+  CardBundle,
+  PaletteView,
+  ResultState,
+  SeasonKey,
+} from "./football/types";
 import {
   athleteSvg,
   boltIcon,
   checkIcon,
   crestSvg,
   pulseMarkSvg,
-  refreshIcon,
   warningIcon,
 } from "./football/artwork";
-import type {
-  PlayerCardView,
-  StandingRowView,
-  TimelineEntry,
-} from "./football/types";
-import { orderShifts } from "./football/util";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -62,55 +71,71 @@ const appElement = document.querySelector<HTMLElement>("#app");
 if (appElement === null) throw new Error("Missing #app root");
 const app: HTMLElement = appElement;
 
-const query = new URLSearchParams(window.location.search);
-const useFixtures = query.get("adapter") === "fixture";
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim() ?? "";
-
-const dateFormatter = new Intl.DateTimeFormat("en-GB", {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-const SEASON_SEED = "cardpulse-2526";
+const configuredApiBase: string =
+  import.meta.env.VITE_API_BASE_URL?.trim() ?? "";
+const SEARCH_DEBOUNCE_MS = 250;
+const POLL_INTERVAL_MS = 1_500;
+const MAX_POLLS = 40;
+const MAX_POLL_FAILURES = 3;
 
 interface AppState {
-  client: CardPulseDataClient;
-  usingFixtureAdapter: boolean;
-  snapshot: DashboardSnapshot | null;
+  client: FootballApiClient;
+  demoSession: boolean;
+  searchQuery: string;
+  searchLoading: boolean;
+  searchFailed: boolean;
+  searchHits: SearchOption[];
+  searchOpen: boolean;
+  searchActiveIndex: number;
+  selectedHit: SearchOption | null;
+  seasons: ReadonlySet<SeasonKey> | null;
+  seasonsError: string | null;
+  selectedSeason: SeasonKey | null;
+  seasonLoading: boolean;
+  seasonMessage: string | null;
+  card: CardBundle | null;
+  matchesUnavailable: boolean;
+  sourceHealth: SourceHealthSummary | null;
+  compareOn: boolean;
+  compareCard: CardBundle | null;
+  compareNote: string | null;
+  flipped: boolean;
   flow: FlowState;
-  hero: PlayerCardView | null;
-  busy: boolean;
-  actionError: string | null;
-  jobsTriggered: number;
-  sessionLog: TimelineEntry[];
+  errorMessage: string | null;
   operatorToken: string;
-  fallbackNotice: string | null;
-  previousTableOrder: string[];
-  bonusPoints: number;
-  failedStepKey: string | null;
-  lastRenderedRecovery: FlowState["recovery"];
+  indexSeason: SeasonKey;
+  indexRefreshing: boolean;
+  indexMessage: string | null;
 }
 
 const state: AppState = {
-  client: useFixtures
-    ? new FixtureCardPulseDataClient()
-    : new HttpCardPulseDataClient(configuredApiBase),
-  usingFixtureAdapter: useFixtures,
-  snapshot: null,
+  client: new HttpFootballApiClient(configuredApiBase),
+  demoSession: false,
+  searchQuery: "",
+  searchLoading: false,
+  searchFailed: false,
+  searchHits: [],
+  searchOpen: false,
+  searchActiveIndex: -1,
+  selectedHit: null,
+  seasons: null,
+  seasonsError: null,
+  selectedSeason: null,
+  seasonLoading: false,
+  seasonMessage: null,
+  card: null,
+  matchesUnavailable: false,
+  sourceHealth: null,
+  compareOn: false,
+  compareCard: null,
+  compareNote: null,
+  flipped: false,
   flow: initialFlowState(),
-  hero: null,
-  busy: false,
-  actionError: null,
-  jobsTriggered: 0,
-  sessionLog: [],
+  errorMessage: null,
   operatorToken: "",
-  fallbackNotice: useFixtures
-    ? "Deterministic fixture adapter requested via ?adapter=fixture."
-    : null,
-  previousTableOrder: [],
-  bonusPoints: 0,
-  failedStepKey: null,
-  lastRenderedRecovery: "none",
+  indexSeason: "2025",
+  indexRefreshing: false,
+  indexMessage: null,
 };
 
 function escapeHtml(value: string): string {
@@ -126,28 +151,6 @@ function qs<T extends Element>(selector: string): T | null {
   return document.querySelector<T>(selector);
 }
 
-function formatTimestamp(value: string | null): string {
-  if (value === null) return "Not yet verified";
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed)
-    ? dateFormatter.format(new Date(parsed))
-    : "Unknown timestamp";
-}
-
-function reducedMotion(): boolean {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-/** Paces the visible phases without faking async completion. */
-function dwell(ms: number): Promise<void> {
-  if (reducedMotion()) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof DataClientError || error instanceof Error) {
     return error.message;
@@ -155,1184 +158,1322 @@ function errorMessage(error: unknown): string {
   return "Unknown pipeline failure";
 }
 
-function dispatch(event: FlowEvent): void {
+function dispatch(event: Parameters<typeof transition>[1]): void {
   state.flow = transition(state.flow, event);
 }
 
-function pushSessionLog(entry: Omit<TimelineEntry, "time">): void {
-  state.sessionLog.unshift({ ...entry, time: new Date().toISOString() });
+function createLiveClient(): HttpFootballApiClient {
+  const client = new HttpFootballApiClient(configuredApiBase);
+  client.setOperatorToken(state.operatorToken.trim());
+  return client;
 }
+
+function reducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+motionQuery.addEventListener("change", () => {
+  document.body.classList.toggle("reduced-motion", motionQuery.matches);
+});
+document.body.classList.toggle("reduced-motion", motionQuery.matches);
 
 // ---------------------------------------------------------------------------
 // Static shell
 // ---------------------------------------------------------------------------
 
-const RAIL_STEPS = [
-  { key: "connecting", title: "Connecting", hint: "Runtime handshake" },
-  {
-    key: "extracting",
-    title: "Extracting fields",
-    hint: "Collector pulls records",
-  },
-  { key: "validating", title: "Validating", hint: "Frozen contract checks" },
-  { key: "materializing", title: "Materializing", hint: "Print plates cut" },
-  { key: "verified", title: "Verified", hint: "Archived w/ provenance" },
-] as const;
-
-let halftoneCounter = 0;
-
 app.innerHTML = `
   <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="topbar shell">
-    <a class="wordmark" href="/" aria-label="CardPulse Football home">
+    <span class="wordmark">
       <span class="wordmark-row">${pulseMarkSvg()}<span class="wordmark-title chromatic">Card//Pulse</span></span>
       <span class="wordmark-sub">Football</span>
-    </a>
+    </span>
     <div class="topbar-tools" id="topbar-tools"></div>
   </header>
   <main id="main-content" class="shell">
-    <section class="hero-copy" aria-labelledby="thesis-title">
-      <div>
-        <p class="eyebrow">Matchday intelligence · self-healing pipeline</p>
-        <h1 id="thesis-title">Living football cards that <em>survive the web.</em></h1>
-        <p class="thesis-note">Every card is extracted, validated field-by-field against a frozen contract,
-        and stamped with provenance. When a source layout breaks mid-match, the last verified card stays on
-        the pitch while the same collector repairs itself — approval required before anything is re-printed.</p>
-      </div>
-      <dl class="hero-facts" id="hero-facts"></dl>
+    <section class="hero-copy" aria-labelledby="hero-title">
+      <p class="eyebrow">Unofficial fan project · Premier League season cards</p>
+      <h1 id="hero-title">Search a player. <em>Print the proof.</em></h1>
+      <p class="thesis-note">Pick any Premier League player, choose a season, and generate a collectible
+      card from observed source data — every stat stamped with where it came from and when it was seen.
+      No player photos, club crests or logos are used anywhere: the art is drawn from scratch.</p>
+      <p class="unofficial-note">Unofficial. Not affiliated with the Premier League or any club.</p>
     </section>
 
-    <section class="matchday" aria-label="Matchday hero card and live pipeline">
-      <div class="card-stage reveal" id="card-stage" aria-live="polite"></div>
-      <div class="console reveal">
-        <div class="console-head">
-          <h2>Live card pipeline</h2>
-          <span class="console-state" id="console-state" role="status"></span>
+    <section class="finder reveal" aria-labelledby="finder-title">
+      <h2 id="finder-title" class="visually-hidden">Player finder</h2>
+      <div class="combobox-shell">
+        <label class="search-label" for="player-input">Find a Premier League player</label>
+        <div class="search-row">
+          <input id="player-input" class="search-input" type="text" role="combobox"
+            autocomplete="off" aria-autocomplete="list" aria-expanded="false"
+            aria-controls="player-listbox" placeholder="e.g. Erling Haaland…"
+            spellcheck="false" />
+          <span class="search-spin" id="search-spin" aria-hidden="true"></span>
         </div>
-        <ol class="rail" id="rail" aria-label="Generation phases"></ol>
-        <div class="console-actions" id="console-actions"></div>
-        <p class="console-footnote" id="console-footnote"></p>
+        <ul id="player-listbox" class="search-listbox" role="listbox"
+          aria-label="Player suggestions"></ul>
+        <p class="sr-status" id="search-status" role="status" aria-live="polite"></p>
       </div>
+
+      <div class="season-row">
+        <fieldset class="season-fieldset">
+          <legend class="season-legend">Season</legend>
+          <div class="season-options" id="season-options" role="radiogroup"
+            aria-label="Card season"></div>
+        </fieldset>
+        <div class="action-row" id="action-row"></div>
+      </div>
+      <p class="season-note" id="season-note" role="status" aria-live="polite"></p>
+
+      <details class="operator-panel" id="operator-panel">
+        <summary>Live operator setup</summary>
+        <p>Live refresh and generation are protected mutations. The token stays in this tab's memory and is sent only to the local CardPulse API.</p>
+        <div class="operator-grid">
+          <label>Operator token
+            <input id="operator-token" type="password" autocomplete="off" spellcheck="false"
+              placeholder="Required for live mutations" />
+          </label>
+          <label>Index season
+            <select id="index-season" aria-label="Season to refresh in the local player index">
+              <option value="2023">2023/24</option>
+              <option value="2024">2024/25</option>
+              <option value="2025" selected>2025/26</option>
+              <option value="2026">2026/27 · incomplete</option>
+            </select>
+          </label>
+          <button class="btn btn-dark" type="button" data-action="refresh-index">Refresh live index</button>
+        </div>
+        <p id="index-status" class="operator-status" role="status" aria-live="polite"></p>
+        <p class="operator-warning">This explicit action can start one billable Bright Data collection. Typing in search never does.</p>
+      </details>
     </section>
 
-    <div class="notice-region" id="notice-region"></div>
-
-    <section class="section reveal" aria-labelledby="teams-title">
-      <div class="section-heading">
-        <div><p class="eyebrow">Squad integrity</p><h2 id="teams-title">Team summary</h2></div>
-        <p class="kicker-note">Each monitored source wears its club colours. Health state, verification streaks
-        and recovery actions come straight from the pipeline.</p>
-      </div>
-      <div class="team-grid" id="team-grid"></div>
+    <section class="pipeline reveal" aria-label="Card generation pipeline">
+      <ol class="rail" id="rail" aria-label="Generation operations"></ol>
+      <div class="notice-region" id="notice-region"></div>
     </section>
 
-    <section class="section reveal" aria-labelledby="standings-title">
-      <div class="section-heading">
-        <div><p class="eyebrow">Secondary table · animated</p><h2 id="standings-title">Standings</h2></div>
-        <p class="kicker-note">Provider rows when the pipeline supplies them; otherwise a simulated league.
-        Verified recoveries nudge the sim table — watch rows reorder.</p>
-      </div>
-      <div class="table-scroller">
-        <table class="standings">
-          <caption id="standings-caption">Season 25/26 · simulated league · demo data</caption>
-          <thead>
-            <tr>
-              <th scope="col">#</th><th scope="col">Club</th><th scope="col">P</th><th scope="col">W</th>
-              <th scope="col">D</th><th scope="col">L</th><th scope="col">GF</th><th scope="col">GA</th>
-              <th scope="col">GD</th><th scope="col">Pts</th>
-            </tr>
-          </thead>
-          <tbody id="standings-body"></tbody>
-        </table>
-      </div>
-      <p class="sim-note"><span id="standings-note">Simulated standings · fictional clubs · always demo data</span></p>
+    <section class="stage-section reveal" aria-label="Player card">
+      <div class="card-stage" id="card-stage"></div>
+      <p class="sr-status" id="card-status" role="status" aria-live="polite"></p>
+      <aside class="side-panel" id="side-panel"></aside>
     </section>
 
-    <details class="drawer section reveal" id="reliability-drawer">
-      <summary>Reliability ledger &amp; recovery timeline</summary>
+    <details class="drawer reveal" id="provenance-drawer">
+      <summary>Provenance &amp; reliability</summary>
       <div class="drawer-body" id="drawer-body"></div>
     </details>
   </main>
-  <footer class="site-footer shell" id="site-footer"></footer>
+  <footer class="site-footer shell">
+    <span>CardPulse Football · unofficial hackathon demo</span>
+    <span>All stats validated structurally before printing</span>
+    <span>No player photography, crests or club assets are used</span>
+  </footer>
 `;
-
-// ---------------------------------------------------------------------------
-// Snapshot helpers
-// ---------------------------------------------------------------------------
-
-async function loadSnapshot(): Promise<DashboardSnapshot> {
-  const snapshot = await state.client.load();
-  state.snapshot = snapshot;
-  return snapshot;
-}
-
-function switchToFixture(reason: string): void {
-  state.client = new FixtureCardPulseDataClient();
-  state.usingFixtureAdapter = true;
-  state.fallbackNotice = reason;
-}
-
-function collectorIdOf(snapshot: DashboardSnapshot): string | null {
-  return snapshot.healing.incident?.collectorId ?? null;
-}
-
-function sourceList(snapshot: DashboardSnapshot): SourceHealthLike[] {
-  return snapshot.sources.data.map((source) => ({
-    sourceId: source.sourceId,
-    state: source.state,
-    checkedAt: source.checkedAt,
-    lastSuccessfulAt: source.lastSuccessfulAt,
-    consecutiveFailures: source.consecutiveFailures,
-    recentFailureRate: source.recentFailureRate,
-    activeIncident:
-      source.activeIncident === null
-        ? null
-        : {
-            reason: source.activeIncident.reason,
-            detail: source.activeIncident.detail,
-          },
-    latestRecoveryEvidence: source.latestRecoveryEvidence
-      ? { actions: source.latestRecoveryEvidence.actions }
-      : null,
-  }));
-}
 
 // ---------------------------------------------------------------------------
 // Painters
 // ---------------------------------------------------------------------------
 
-function paintTopbarTools(): void {
+function paintTopbar(): void {
   const target = qs("#topbar-tools");
-  if (target === null || state.snapshot === null) return;
-  const runtime = state.snapshot.runtime;
-  const ready =
-    runtime.mode === "mock" ||
-    (runtime.collectorConfigured && runtime.targetConfigured);
-  const live = runtime.mode === "live" && !state.usingFixtureAdapter;
+  if (target === null) return;
   target.innerHTML = `
-    <span class="chip ${live ? "live" : "demo"}">
-      <span class="dot" aria-hidden="true"></span>${live ? "Live provider" : "Demo data"}
+    <span class="chip ${state.demoSession ? "demo" : "live"}">
+      <span class="dot" aria-hidden="true"></span>${state.demoSession ? "Demo data" : "Live provider"}
     </span>
-    <span class="chip ${ready ? "demo" : ""}" style="${ready ? "" : "border-color: var(--gold); color: var(--gold);"}">
-      ${ready ? "Runtime ready" : "Config incomplete"}
-    </span>`;
+    <span class="chip chip-outline">Unofficial</span>`;
 }
 
-function paintHeroFacts(): void {
-  const target = qs("#hero-facts");
-  if (target === null || state.snapshot === null) return;
-  const rows: Array<[string, string]> = [
-    ["Data mode", resolveDataLabelText()],
-    ["Pipeline", resolveModeChipText()],
-    ["Tracked sources", String(state.snapshot.sources.pagination.total)],
-    ["Verified cards", String(state.snapshot.players.pagination.total)],
-    ["Last sync", formatTimestamp(state.snapshot.receivedAt)],
-  ];
-  target.innerHTML = rows
-    .map(
-      ([label, value]) =>
-        `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`,
-    )
+function highlightName(name: string, query: string): string {
+  const span = firstMatchSpan(name, query);
+  if (span === null) return escapeHtml(name);
+  const [start, end] = span;
+  return `${escapeHtml(name.slice(0, start))}<mark>${escapeHtml(
+    name.slice(start, end),
+  )}</mark>${escapeHtml(name.slice(end))}`;
+}
+
+function optionId(index: number): string {
+  return `player-option-${index}`;
+}
+
+function paintSearchListbox(): void {
+  const listbox = qs("#player-listbox");
+  const input = qs<HTMLInputElement>("#player-input");
+  const status = qs("#search-status");
+  const spin = qs("#search-spin");
+  if (listbox === null || input === null || status === null || spin === null)
+    return;
+
+  const resultState: ResultState = resolveResultState({
+    queryLength: normalizeQuery(state.searchQuery).length,
+    loading: state.searchLoading,
+    failed: state.searchFailed,
+    resultCount: state.searchHits.length,
+  });
+  spin.classList.toggle("active", state.searchLoading);
+
+  let listHtml = "";
+  if (state.searchOpen && resultState !== "too-short") {
+    if (resultState === "loading" && state.searchHits.length === 0) {
+      listHtml = `<li class="list-state" role="status">Searching players…</li>`;
+    } else if (resultState === "source-unavailable") {
+      listHtml = `<li class="list-state list-error" role="alert">
+        Player source unavailable. <button type="button" class="text-button" data-action="retry-search">Retry</button>
+      </li>`;
+    } else if (resultState === "empty") {
+      listHtml = `<li class="list-state">No players found for “${escapeHtml(
+        normalizeQuery(state.searchQuery),
+      )}”.</li>`;
+    } else {
+      listHtml = state.searchHits
+        .map((hit, index) => {
+          const active = state.searchActiveIndex === index;
+          const seasons = hit.seasons
+            .map((season) => {
+              const key = parseSeasonKey(season);
+              return key === null ? null : seasonLabel(key);
+            })
+            .filter((label): label is string => label !== null);
+          return `<li id="${optionId(index)}" role="option" class="search-option${
+            active ? " active" : ""
+          }" aria-selected="${active}" data-index="${index}">
+            <span class="option-name">${highlightName(hit.playerName, normalizeQuery(state.searchQuery))}</span>
+            <span class="option-meta">
+              <span class="option-club">${escapeHtml(hit.clubName)}</span>
+              <span class="option-pos">${escapeHtml(hit.positionDisplay)}</span>
+              <span class="option-seasons">${escapeHtml(seasons.join(" · ")) || "no seasons listed"}</span>
+            </span>
+          </li>`;
+        })
+        .join("");
+    }
+  }
+  listbox.innerHTML = listHtml;
+  if (listHtml === "") listbox.setAttribute("hidden", "");
+  else listbox.removeAttribute("hidden");
+
+  input.setAttribute(
+    "aria-expanded",
+    String(state.searchOpen && resultState !== "too-short"),
+  );
+  const activeId =
+    state.searchOpen && state.searchActiveIndex >= 0
+      ? optionId(state.searchActiveIndex)
+      : "";
+  if (activeId !== "") input.setAttribute("aria-activedescendant", activeId);
+  else input.removeAttribute("aria-activedescendant");
+
+  const selectedPlayer = state.selectedHit;
+  status.textContent =
+    selectedPlayer !== null &&
+    !state.searchOpen &&
+    normalizeQuery(state.searchQuery) ===
+      normalizeQuery(selectedPlayer.playerName)
+      ? `Selected ${selectedPlayer.playerName}, ${selectedPlayer.clubName}.`
+      : resultState === "results" || resultState === "empty"
+        ? announceResultState(resultState, state.searchHits.length)
+        : announceResultState(resultState);
+}
+
+function paintSeasons(): void {
+  const wrap = qs("#season-options");
+  const note = qs("#season-note");
+  if (wrap === null || note === null) return;
+
+  const known = state.seasons !== null && state.seasonsError === null;
+  const options = buildSeasonOptions(state.seasons ?? new Set());
+  wrap.innerHTML = options
+    .map((option) => {
+      const checked = state.selectedSeason === option.key;
+      const disabled = !known || !option.available;
+      return `<button type="button" role="radio" class="season-pill${checked ? " selected" : ""}"
+        aria-checked="${checked}" data-season="${option.key}" ${disabled ? "disabled" : ""}
+        ${option.inProgress ? 'data-in-progress="true"' : ""}>
+        ${escapeHtml(option.label)}${option.inProgress ? '<small aria-hidden="true">●</small>' : ""}
+      </button>`;
+    })
     .join("");
+
+  if (state.seasonsError !== null) {
+    note.textContent = state.seasonsError;
+  } else if (!known && state.selectedHit !== null) {
+    note.textContent = "Checking available seasons…";
+  } else if (state.seasonMessage !== null) {
+    note.textContent = state.seasonMessage;
+  } else if (
+    state.selectedSeason !== null &&
+    isInProgressSeason(state.selectedSeason)
+  ) {
+    note.textContent = `${seasonLabel(state.selectedSeason)} is the current campaign — cards are incomplete by nature.`;
+  } else {
+    note.textContent = "";
+  }
 }
 
-function resolveDataLabelText(): string {
-  if (state.snapshot === null) return "…";
-  // Delegates to the tested mapping helper so the card face, hero facts and
-  // drawer can never disagree about mock/live labelling.
-  return resolveDataLabel(state.snapshot.runtime, state.usingFixtureAdapter);
+function isBusy(): boolean {
+  return state.flow.generation.kind === "running";
 }
 
-function resolveModeChipText(): string {
-  if (state.snapshot === null) return "…";
-  return resolveModeChip(state.snapshot.runtime, state.usingFixtureAdapter);
+function paintActions(): void {
+  const target = qs("#action-row");
+  if (target === null) return;
+  const ready = state.selectedHit !== null && state.selectedSeason !== null;
+  const busy = isBusy();
+  const generateDisabled = !ready || busy;
+  // Activating the demo catalog is always available; generation still needs
+  // an explicit player and season selection.
+  target.innerHTML = `
+    <button class="btn btn-primary" type="button" data-action="generate"
+      ${generateDisabled ? "disabled" : ""} ${busy ? 'aria-busy="true"' : ""}>
+      ${boltIcon()} ${busy ? "Generating…" : "Generate card"}
+    </button>
+    <button class="btn btn-demo" type="button" data-action="try-demo"
+      ${busy ? "disabled" : ""}>
+      Use demo data
+    </button>
+    ${
+      state.card !== null
+        ? `<button class="btn btn-dark" type="button" data-action="flip" aria-pressed="${state.flipped}">${checkIcon()} Flip card</button>`
+        : ""
+    }`;
 }
 
 function paintRail(): void {
   const rail = qs("#rail");
   if (rail === null) return;
-  const order = [
-    "idle",
-    "connecting",
-    "extracting",
-    "validating",
-    "materializing",
-    "verified",
-  ];
-  const phaseIndex = Math.max(order.indexOf(state.flow.phase), 0);
-  const failedIndex = state.failedStepKey
-    ? RAIL_STEPS.findIndex((step) => step.key === state.failedStepKey)
-    : -1;
-  rail.innerHTML = RAIL_STEPS.map((step, index) => {
+  const gen = state.flow.generation;
+  const done = completedSteps(state.flow);
+  const currentStep = gen.kind === "running" ? gen.step : null;
+  const failedStep = gen.kind === "failed" ? gen.step : null;
+  rail.innerHTML = RAIL_STEPS.map((step) => {
     let status: "pending" | "done" | "current" | "failed" = "pending";
-    if (failedIndex >= 0 && index === failedIndex) status = "failed";
-    else if (failedIndex >= 0 && index < failedIndex) status = "done";
-    else if (phaseIndex > index + 1 || state.flow.phase === "verified")
-      status = index + 1 <= phaseIndex ? "done" : "pending";
-    else if (phaseIndex === index + 1) status = "current";
+    if (failedStep === step) status = "failed";
+    else if (done.has(step)) status = "done";
+    else if (currentStep === step) status = "current";
     const icon =
       status === "done"
         ? checkIcon()
         : status === "failed"
           ? warningIcon()
           : "";
-    return `<li class="${status}"${status === "current" ? ' aria-current="step"' : ""}>
-      ${icon}<strong>${step.title}</strong><small>${step.hint}</small>
-    </li>`;
+    const label = RAIL_LABELS[step];
+    return `<li class="${status}" ${
+      status === "current" ? 'aria-current="step"' : ""
+    }><span class="rail-icon" aria-hidden="true">${icon}</span><strong>${label}</strong>${
+      status === "current"
+        ? '<span class="rail-live" aria-hidden="true"></span>'
+        : ""
+    }</li>`;
   }).join("");
-}
-
-function paintConsoleState(): void {
-  const target = qs("#console-state");
-  if (target === null) return;
-  const flow = state.flow;
-  let text: string;
-  if (state.busy) text = `PHASE: ${flow.phase.toUpperCase()}…`;
-  else if (flow.phase === "blocked") text = "PIPELINE BLOCKED";
-  else if (flow.recovery === "compromised")
-    text = "RECOVERY: DRIFT QUARANTINED";
-  else if (flow.recovery === "repair-requested")
-    text = "RECOVERY: PREVIEW PENDING VALIDATION";
-  else if (flow.recovery === "preview-valid")
-    text = "RECOVERY: APPROVAL GATE OPEN";
-  else if (flow.recovery === "preview-invalid")
-    text = "RECOVERY: PREVIEW REJECTED";
-  else if (flow.recovery === "recovery-failed") text = "RECOVERY FAILED SAFELY";
-  else if (flow.recovery === "recovered") text = "VERIFIED RECOVERY COMPLETE";
-  else if (flow.phase === "verified") text = "CARD VERIFIED & ARCHIVED";
-  else text = `PHASE: ${flow.phase.toUpperCase()}`;
-  target.textContent = text;
-}
-
-function paintConsoleActions(): void {
-  const target = qs("#console-actions");
-  if (target === null) return;
-  const flow = state.flow;
-  const busy = state.busy;
-  const buttons: string[] = [];
-
-  if (busy) {
-    buttons.push(
-      `<button class="btn btn-primary" type="button" disabled aria-busy="true">${boltIcon()} Working…</button>`,
-    );
-  } else if (
-    flow.phase === "idle" ||
-    flow.phase === "verified" ||
-    (flow.phase === "blocked" && flow.recovery !== "compromised")
-  ) {
-    buttons.push(
-      `<button class="btn btn-primary" type="button" data-action="generate">${boltIcon()} Generate card</button>`,
-    );
-  }
-
-  if (!busy && flow.recovery === "compromised") {
-    buttons.push(
-      `<button class="btn btn-dark" type="button" data-action="repair-request">${refreshIcon()} Fetch repair preview</button>`,
-    );
-  } else if (!busy && flow.recovery === "repair-requested") {
-    buttons.push(
-      `<button class="btn btn-dark" type="button" data-action="validate-preview">${checkIcon()} Validate preview</button>`,
-    );
-  } else if (!busy && flow.recovery === "preview-valid") {
-    buttons.push(
-      `<button class="btn btn-primary" type="button" data-action="approve-repair">${checkIcon()} Approve repair</button>`,
-    );
-  } else if (!busy && flow.recovery === "preview-invalid") {
-    buttons.push(
-      `<button class="btn btn-dark" type="button" data-action="validate-preview">${refreshIcon()} Retry preview validation</button>`,
-    );
-  } else if (!busy && flow.recovery === "recovery-failed") {
-    buttons.push(
-      `<button class="btn btn-dark" type="button" data-action="generate">${refreshIcon()} Re-run baseline generation</button>`,
-    );
-  }
-
-  if (
-    !busy &&
-    flow.phase === "verified" &&
-    (flow.recovery === "none" || flow.recovery === "recovered")
-  ) {
-    buttons.push(
-      `<button class="btn btn-ghost-danger btn-small" type="button" data-action="inject-drift">${warningIcon()} Inject layout drift · demo</button>`,
-    );
-  }
-
-  const tokenField =
-    !busy &&
-    state.snapshot?.runtime.mode === "live" &&
-    state.snapshot.runtime.liveMutationsEnabled
-      ? `<label class="token-field">Operator token
-           <input id="operator-token" type="password" autocomplete="off"
-             placeholder="32+ chars · memory only" value="${escapeHtml(state.operatorToken)}">
-         </label>`
-      : "";
-
-  target.innerHTML = `${buttons.join("")}${tokenField}${
-    state.actionError
-      ? `<p class="action-error" role="alert">${escapeHtml(state.actionError)}</p>`
-      : ""
-  }`;
-}
-
-function paintFootnote(): void {
-  const target = qs("#console-footnote");
-  if (target === null) return;
-  const preserved = state.hero
-    ? `Preserved card: ${state.hero.serialNumber} (${state.hero.playerName}).`
-    : "No verified card yet.";
-  target.textContent = `Phases advance only when each pipeline step resolves. ${preserved}`;
-}
-
-function renderPlaceholder(): void {
-  const stage = qs("#card-stage");
-  if (stage === null) return;
-  stage.innerHTML = `<div class="card-placeholder">
-    <strong>Awaiting first extraction</strong>
-    <span>Run the pipeline to materialize the matchday hero</span>
-  </div>`;
-}
-
-function renderCard(card: PlayerCardView): void {
-  const stage = qs("#card-stage");
-  if (stage === null) return;
-  const htId = `cp-ht-${(halftoneCounter += 1)}`;
-  const crestHtId = `cp-crest-${halftoneCounter}`;
-  const provenance = card.provenance;
-  stage.innerHTML = `<article class="hero-card" tabindex="0" aria-label="Matchday hero card: ${escapeHtml(
-    card.playerName,
-  )}, ${escapeHtml(card.clubName)}, position ${escapeHtml(card.positionDisplay)}">
-    <div class="card-frame" id="card-frame">
-      <div class="card-inner">
-        <header class="card-head">
-          <span class="club-line"><span class="club-badge" aria-hidden="true">${escapeHtml(card.clubCode)}</span>${escapeHtml(card.clubName)}</span>
-          <span class="card-serial">${escapeHtml(card.serialNumber)} · ${escapeHtml(card.seasonLabel)}</span>
-        </header>
-        <div class="card-art">
-          ${crestSvg({ initials: escapeHtml(card.clubCode), halftoneId: crestHtId })}
-          ${athleteSvg({ halftoneId: htId })}
-          <span class="card-number" aria-hidden="true">${card.shirtNumber ?? "—"}</span>
-        </div>
-        <div class="verify-stamp chromatic">Verified<small>${escapeHtml(formatTimestamp(provenance.verifiedAt))}</small></div>
-        <div class="card-body">
-          <h3 class="player-name">${escapeHtml(card.playerName)}</h3>
-          <p class="player-meta">
-            <span class="position-tag">${escapeHtml(card.positionDisplay)}</span>
-            <span>${escapeHtml(card.clubName)}</span>
-            <span>Form bound to snapshot v${provenance.snapshotVersion}</span>
-          </p>
-          <dl class="attr-grid">
-            ${card.attributes
-              .map(
-                (attr) => `<div><dt>${escapeHtml(attr.label)}</dt>
-                  <dd class="attr-bar"><i style="width:${attr.pct}%"></i></dd>
-                  <dd>${attr.value}</dd></div>`,
-              )
-              .join("")}
-          </dl>
-          <dl class="form-row"><dt>Form</dt>
-            ${card.form.map((mark) => `<dd class="form-mark ${mark}">${mark}</dd>`).join("")}
-          </dl>
-          <dl class="provenance">
-            <div><dt>Verified at</dt><dd>${escapeHtml(formatTimestamp(provenance.verifiedAt))}</dd></div>
-            <div><dt>Source</dt><dd>${escapeHtml(provenance.sourceId)}</dd></div>
-            <div><dt>Snapshot</dt><dd>v${provenance.snapshotVersion}</dd></div>
-            <div><dt>Collector</dt><dd>${escapeHtml(provenance.collectorIdRedacted)}</dd></div>
-            <div><dt>Signature</dt><dd>${escapeHtml(provenance.signature)}</dd></div>
-            <div><dt>Data label</dt><dd>${escapeHtml(resolveDataLabelText())}</dd></div>
-          </dl>
-          <p class="identity-note">Form index and serial are presentation, bound to snapshot ${escapeHtml(provenance.snapshotId.slice(0, 8))}… — the provenance record is real.</p>
-        </div>
-        <div class="card-shine" aria-hidden="true"></div>
-      </div>
-    </div>
-  </article>`;
-  attachTilt(stage.querySelector<HTMLElement>(".hero-card"));
-}
-
-function updateChromeGlitch(previousRecovery: FlowState["recovery"]): void {
-  const stage = qs<HTMLElement>(".hero-card");
-  if (stage === null) return;
-  const glitched = isChromeGlitched(state.flow);
-  stage.classList.toggle("is-compromised", glitched);
-  if (previousRecovery !== "recovered" && state.flow.recovery === "recovered") {
-    stage.classList.add("just-recovered");
-    window.setTimeout(() => stage.classList.remove("just-recovered"), 900);
-  }
+  rail.classList.toggle("working", gen.kind === "running");
 }
 
 interface BannerSpec {
-  tone: "warn" | "bad" | "good";
-  role: "status" | "alert";
-  title: string;
-  body: string;
-  action?: string;
-  actionLabel?: string;
+  tone: "warn" | "bad" | "info";
+  role: "alert" | "status";
+  html: string;
 }
 
 function paintNotices(): void {
   const region = qs("#notice-region");
-  if (region === null || state.snapshot === null) return;
+  if (region === null) return;
   const banners: BannerSpec[] = [];
-
-  if (state.fallbackNotice !== null) {
-    banners.push({
-      tone: "warn",
-      role: "status",
-      title: "Demo data",
-      body: `${state.fallbackNotice} No provider claims are made in this mode.`,
-      action: "retry-api",
-      actionLabel: "Retry CardPulse API",
-    });
-  }
-  if (state.snapshot.stale) {
-    banners.push({
-      tone: "warn",
-      role: "status",
-      title: "Stale sync",
-      body: "Responses are older than two minutes. Values stay visible but are not current.",
-    });
-  }
-  const healingState = state.snapshot.healing.state;
-  if (isCompromisedState(healingState)) {
-    const incident = state.snapshot.healing.incident;
+  if (state.errorMessage !== null) {
     banners.push({
       tone: "bad",
       role: "alert",
-      title: "Layout drift contained",
-      body: `${describeHealing(healingState)} ${
-        incident?.reason ?? ""
-      } The last verified card keeps playing — only its chrome glitches.`,
-    });
-  } else if (state.flow.recovery === "recovered") {
-    banners.push({
-      tone: "good",
-      role: "status",
-      title: "Verified recovery",
-      body: "Same collector, clean rerun, evidence archived. The card was never replaced.",
+      html: `<strong>Generation failed.</strong> ${escapeHtml(state.errorMessage)}
+        The last printed card is still shown below.
+        <button type="button" class="text-button" data-action="generate">Retry generation</button>`,
     });
   }
-  const change = state.snapshot.changes.data[0];
-  if (change !== undefined) {
-    const summaries = change.changes
-      .map(describeStatChange)
-      .filter((item): item is string => item !== null);
+  if (state.demoSession) {
     banners.push({
       tone: "warn",
       role: "status",
-      title: "Real amendment detected",
-      body:
-        summaries.join(" ") ||
-        "Verified business change after the recovery rerun.",
+      html: `<strong>Demo data.</strong> You asked for the offline demo dataset — every card carries a
+        DEMO DATA stamp until you generate from the live source again.`,
     });
-  }
-
-  if (banners.length > 0) {
-    region.setAttribute("aria-label", "Pipeline notices");
-  } else {
-    region.removeAttribute("aria-label");
   }
   region.innerHTML = banners
     .map(
-      (banner) => `<div class="banner ${banner.tone}" role="${banner.role}">
-        <strong>${escapeHtml(banner.title)}</strong>
-        <p>${escapeHtml(banner.body)}</p>
-        ${
-          banner.action
-            ? `<button class="text-button" type="button" data-action="${banner.action}">${escapeHtml(banner.actionLabel ?? "Retry")}</button>`
-            : ""
-        }
-      </div>`,
+      (banner) =>
+        `<div class="banner ${banner.tone}" role="${banner.role}"><p>${banner.html}</p></div>`,
     )
     .join("");
 }
 
-function paintTeams(): void {
-  const grid = qs("#team-grid");
-  if (grid === null || state.snapshot === null) return;
-  const section = resolveTeamSectionState({
-    teams: state.snapshot.teams.data,
-    sources: sourceList(state.snapshot),
-    playerCount: state.snapshot.players.pagination.total,
-  });
+function paletteStyle(palette: PaletteView): string {
+  return `--team-primary:${palette.primary};--team-secondary:${palette.secondary};--team-accent:${palette.accent}`;
+}
 
-  if (section.kind === "team-cards") {
-    grid.innerHTML = section.teams
-      .map(
-        (team) => `<article class="team-card">
-          <header>
-            <h3>${escapeHtml(team.name)}</h3>
-            ${
-              team.state
-                ? `<span class="state-pill ${team.state}">${escapeHtml(team.state)}</span>`
-                : ""
-            }
-          </header>
-          <dl>
-            ${team.city ? `<div><dt>City</dt><dd>${escapeHtml(team.city)}</dd></div>` : ""}
-            ${team.stadium ? `<div><dt>Stadium</dt><dd>${escapeHtml(team.stadium)}</dd></div>` : ""}
-            ${team.coach ? `<div><dt>Coach</dt><dd>${escapeHtml(team.coach)}</dd></div>` : ""}
-            ${team.founded !== null ? `<div><dt>Founded</dt><dd>${team.founded}</dd></div>` : ""}
-            <div><dt>Snapshot</dt><dd>v${team.snapshotVersion}</dd></div>
-            <div><dt>Last verified</dt><dd>${escapeHtml(formatTimestamp(team.observedAt))}</dd></div>
-          </dl>
-        </article>`,
-      )
-      .join("");
+function formatTimestamp(value: string | null): string {
+  if (value === null) return "not recorded";
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed)
+    ? new Intl.DateTimeFormat("en-GB", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(parsed))
+    : value;
+}
+
+function statLine(label: string, value: number | null): string {
+  return `<div class="stat-cell"><dt>${escapeHtml(label)}</dt><dd>${
+    value === null ? "n/a" : String(value)
+  }</dd></div>`;
+}
+
+function renderCardStage(): void {
+  const stage = qs("#card-stage");
+  if (stage === null) return;
+  const card = state.card;
+  if (card === null) {
+    stage.innerHTML = `<div class="card-placeholder">
+      <strong>The press is warm</strong>
+      <span>Search a player, pick a season, then generate a card.</span>
+      <span class="placeholder-hint">Cards print from observed source data — nothing here is invented.</span>
+    </div>`;
     return;
   }
 
-  if (section.kind === "source-cards") {
-    // No tracked team metadata: fall back to source-integrity club cards.
-    grid.innerHTML = section.clubs
-      .map((club) => {
-        const incidentNote =
-          club.incidentReason !== null
-            ? `<p class="incident-note"><strong>${escapeHtml(club.incidentReason)}</strong> — extraction damage is quarantined here, never printed onto cards.</p>`
-            : "";
-        const actions =
-          club.recoveryActions.length > 0
-            ? `<ul class="recovery-actions-list">${club.recoveryActions
-                .map((action) => `<li>${escapeHtml(action)}</li>`)
-                .join("")}</ul>`
-            : "";
-        return `<article class="team-card">
-          <header>
-            <h3>${escapeHtml(club.clubCode)} · source</h3>
-            <span class="state-pill ${club.state}">${escapeHtml(club.state)}</span>
-          </header>
-          <dl>
-            <div><dt>Source id</dt><dd>${escapeHtml(club.sourceId)}</dd></div>
-            <div><dt>Fail streak</dt><dd>${club.consecutiveFailures}</dd></div>
-            <div><dt>Recent failures</dt><dd>${club.recentFailureRate}%</dd></div>
-            <div><dt>Last healthy</dt><dd>${escapeHtml(formatTimestamp(club.lastSuccessfulAt))}</dd></div>
+  const front = card.front;
+  const back = card.back;
+  const demoBadge = front.isDemo
+    ? `<span class="demo-badge" role="note">DEMO DATA</span>`
+    : "";
+  const progressBadge = front.seasonInProgress
+    ? `<span class="progress-badge">Season in progress</span>`
+    : "";
+  const cardAriaLabel = state.flipped
+    ? `Player card, ${front.playerName}. Back: season-bound match details and goal timeline. Press Enter to return to season totals.`
+    : `Player card, ${front.playerName}. Front: season totals. Press Enter to flip to match details.`;
+  const match = back.headlineMatch;
+  const timeline =
+    back.timeline.length > 0
+      ? `<ol class="goal-timeline">${back.timeline
+          .map(
+            (entry) =>
+              `<li class="tone-${entry.tone}"><strong>${escapeHtml(entry.title)}</strong><span>${escapeHtml(entry.detail)}</span></li>`,
+          )
+          .join("")}</ol>`
+      : `<p class="timeline-empty">${
+          back.note ?? "No goal events recorded."
+        }</p>`;
+
+  stage.innerHTML = `
+  <article class="flip-card${state.flipped ? " flipped" : ""}" id="flip-card"
+    tabindex="0" role="button" aria-roledescription="collectible card"
+    aria-label="${escapeHtml(cardAriaLabel)}"
+    style="${paletteStyle(front.palette)}">
+    <div class="card-inner3d">
+      <div class="face face-front">
+        <header class="card-head">
+          <span class="club-line"><span class="club-badge" aria-hidden="true">${escapeHtml(front.clubCode)}</span>${escapeHtml(front.clubName)}</span>
+          <span class="card-serial">${escapeHtml(front.serialNumber)} · ${escapeHtml(front.seasonLabel)}</span>
+        </header>
+        <div class="card-art">
+          ${crestSvg({ initials: escapeHtml(front.clubCode), halftoneId: `ht-front-${front.playerId.replace(/[^a-z0-9]/gi, "")}` })}
+          ${athleteSvg({ halftoneId: "ht-athlete" })}
+          <span class="card-number" aria-hidden="true">${front.shirtNumber ?? "—"}</span>
+          ${demoBadge}${progressBadge}
+        </div>
+        <div class="card-body">
+          <h3 class="player-name chromatic">${escapeHtml(front.playerName)}</h3>
+          <p class="player-meta">
+            <span class="position-tag">${escapeHtml(front.positionDisplay)}</span>
+            <span>${escapeHtml(front.clubName)}</span>
+            <span>${escapeHtml(front.seasonLabel)}${front.seasonInProgress ? " · in progress" : ""}</span>
+          </p>
+          <dl class="stat-grid">
+            ${statLine("Appearances", front.totals.appearances)}
+            ${statLine("Goals", front.totals.goals)}
+            ${statLine("Assists", front.totals.assists)}
+            ${statLine("Minutes", front.totals.minutesPlayed)}
+            ${statLine("Yellows", front.totals.yellowCards)}
+            ${statLine("Reds", front.totals.redCards)}
           </dl>
-          ${incidentNote}${actions}
-        </article>`;
-      })
-      .join("");
+          <dl class="attr-grid">
+            ${front.attributes
+              .map(
+                (attr) =>
+                  `<div><dt>${escapeHtml(attr.label)}</dt><dd class="attr-bar"><i style="width:${attr.pct}%"></i></dd><dd class="attr-value">${attr.value}</dd></div>`,
+              )
+              .join("")}
+          </dl>
+          <p class="verified-line">Source observed: ${escapeHtml(formatTimestamp(front.verifiedAtLabel))}</p>
+        </div>
+      </div>
+      <div class="face face-back">
+        <header class="card-head">
+          <span class="club-line"><span class="club-badge" aria-hidden="true">${escapeHtml(front.clubCode)}</span>${escapeHtml(front.seasonLabel)} · match sheet</span>
+          <span class="card-serial">${escapeHtml(front.serialNumber)}</span>
+        </header>
+        <div class="card-body back-body">
+          ${
+            match === null
+              ? `<p class="match-empty">${escapeHtml(back.note ?? "No match selected.")}</p>`
+              : `<h4 class="match-headline">Top scoring match</h4>
+          <p class="match-line">
+            <span class="venue-tag">${escapeHtml(match.venue)}</span>
+            <strong>${escapeHtml(match.opponent)}</strong>
+            <span class="match-score">${escapeHtml(match.scoreLabel ?? "score n/a")}</span>
+          </p>
+          <p class="match-date">${escapeHtml(match.dateLabel)}</p>
+          <dl class="stat-grid compact">
+            ${statLine("Goals", match.goals)}
+            ${statLine("Assists", match.assists)}
+            ${statLine("Minutes", match.minutes)}
+          </dl>`
+          }
+          <h4 class="timeline-head">Goal timeline · ${escapeHtml(front.seasonLabel)}</h4>
+          ${timeline}
+          <p class="flip-hint">Use the Flip control or press Enter again to return to the totals face.</p>
+        </div>
+      </div>
+    </div>
+  </article>`;
+
+  attachTilt(stage.querySelector<HTMLElement>("#flip-card"));
+  paintSidePanel();
+  paintDrawer();
+}
+
+function paintSidePanel(): void {
+  const panel = qs("#side-panel");
+  if (panel === null) return;
+  const card = state.card;
+  if (card === null) {
+    panel.innerHTML = "";
     return;
   }
-
-  // Empty secondary datasets are expected states, so they render as calm,
-  // explanatory copy — never as an error.
-  grid.innerHTML = `<p class="empty-note">${escapeHtml(section.note)}</p>`;
-}
-
-// ---------------------------------------------------------------------------
-// Standings — provider rows when present, deterministic sim table otherwise
-// ---------------------------------------------------------------------------
-
-interface ActiveTable {
-  rows: StandingRowView[];
-  orderKeys: string[];
-}
-
-function activeStandingsTable(): ActiveTable {
-  const snapshot = state.snapshot;
-  if (snapshot !== null && snapshot.standings.data.length > 0) {
-    const rows = [...snapshot.standings.data]
-      .sort((a, b) => a.rank - b.rank)
-      .map((entry) => ({
-        key: `p:${entry.teamId}`,
-        clubName: entry.teamName,
-        played: entry.played,
-        won: entry.won,
-        drawn: entry.drawn,
-        lost: entry.lost,
-        goalsFor: entry.goalsFor,
-        goalsAgainst: entry.goalsAgainst,
-        goalDiff: entry.goalsFor - entry.goalsAgainst,
-        points: entry.points,
-        rank: entry.rank,
-        isHeroClub:
-          state.hero !== null && state.hero.clubName === entry.teamName,
-      }));
-    return { rows, orderKeys: rows.map((row) => row.key) };
-  }
-  const simRows = buildSeasonTable(
-    SEASON_SEED,
-    heroClubCode(),
-    state.bonusPoints,
-  ).map((row) => ({
-    ...row,
-    key: `s:${row.clubCode}`,
-    rank: null,
-    goalDiff: row.goalsFor - row.goalsAgainst,
-  }));
-  return { rows: simRows, orderKeys: simRows.map((row) => row.key) };
-}
-
-function heroClubCode(): string | null {
-  if (state.hero !== null) return state.hero.clubCode;
-  const firstSource = state.snapshot?.sources.data[0]?.sourceId;
-  return firstSource ? clubForId(firstSource).code : null;
-}
-
-function movementClass(shift: number): string {
-  if (shift > 0) return "up";
-  if (shift < 0) return "down";
-  return "flat";
-}
-
-function rowHtml(row: StandingRowView, index: number, shift: number): string {
-  const diff = row.goalDiff;
-  return `<tr data-club="${escapeHtml(row.key)}" class="${row.isHeroClub ? "hero-club" : ""}"
-    style="--stagger:${index}">
-    <td><span class="pos-cell"><span class="movement ${movementClass(shift)}" role="img" aria-label="${
-      shift > 0
-        ? `up ${shift}`
-        : shift < 0
-          ? `down ${Math.abs(shift)}`
-          : "no change"
-    }"></span><span class="pos-badge">${index + 1}</span></span></td>
-    <th scope="row">${escapeHtml(row.clubName)}</th>
-    <td>${row.played}</td><td>${row.won}</td><td>${row.drawn}</td><td>${row.lost}</td>
-    <td>${row.goalsFor}</td><td>${row.goalsAgainst}</td><td>${diff > 0 ? `+${diff}` : diff}</td>
-    <td class="points">${row.points}</td>
-  </tr>`;
-}
-
-function paintStandings(): void {
-  const tbody = qs("#standings-body");
-  if (tbody === null) return;
-  const table = activeStandingsTable();
-  // Captions/notes come from one tested helper so the simulated league can
-  // never drift into provider-sounding language.
-  const providerBacked =
-    state.snapshot?.runtime.mode === "live" && !state.usingFixtureAdapter;
-  const copy = standingsTableCopy(
-    resolveStandingsMode(table.rows.length, providerBacked),
-  );
-  const caption = qs("#standings-caption");
-  if (caption !== null) {
-    caption.textContent = copy.caption;
-  }
-  const note = qs("#standings-note");
-  if (note !== null) {
-    note.textContent = copy.note;
-  }
-  const nextOrder = table.orderKeys;
-  const shifts = orderShifts(state.previousTableOrder, nextOrder);
-  const firstPaint = state.previousTableOrder.length === 0;
-  tbody.innerHTML = table.rows
-    .map((row, index) => rowHtml(row, index, shifts[row.key] ?? 0))
-    .join("");
-
-  if (!firstPaint && !reducedMotion() && Object.keys(shifts).length > 0) {
-    const rowHeight =
-      tbody.firstElementChild?.getBoundingClientRect().height ?? 42;
-    const movingRows = Array.from(tbody.children).filter((element) => {
-      const key = (element as HTMLElement).dataset.club;
-      return key !== undefined && (shifts[key] ?? 0) !== 0;
-    }) as HTMLElement[];
-    for (const row of movingRows) {
-      const key = row.dataset.club ?? "";
-      row.style.transform = `translateY(${(shifts[key] ?? 0) * rowHeight}px)`;
+  const compareRows = (): string => {
+    if (!state.compareOn) return "";
+    if (state.compareCard === null) {
+      return `<h4 class="panel-title">Season comparison</h4>
+        <p class="panel-note">${escapeHtml(
+          state.compareNote ?? "Previous-season data is not available.",
+        )}</p>`;
     }
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        for (const row of movingRows) {
-          row.classList.add("flipping");
-          row.style.transform = "";
-        }
-        window.setTimeout(() => {
-          for (const row of movingRows) row.classList.remove("flipping");
-        }, 600);
-      });
-    });
-  }
-  state.previousTableOrder = nextOrder;
+    const current: StatTotalsLike | null = card.front.totals;
+    const previous = state.compareCard.front.totals;
+    const deltas = buildCompareDeltas(current, previous);
+    const previousLabel = state.compareCard.front.seasonLabel;
+    return `<h4 class="panel-title">Compared with ${escapeHtml(previousLabel)}</h4>
+      <table class="compare-table">
+        <caption class="visually-hidden">Season over season deltas</caption>
+        <thead><tr><th scope="col">Metric</th><th scope="col">This</th><th scope="col">Prev</th><th scope="col">Δ</th></tr></thead>
+        <tbody>
+          ${deltas
+            .map(
+              (delta) =>
+                `<tr><th scope="row">${escapeHtml(delta.metric)}</th><td>${escapeHtml(delta.currentLabel)}</td><td>${escapeHtml(delta.previousLabel)}</td><td class="delta ${delta.direction}">${escapeHtml(delta.deltaLabel)}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>`;
+  };
+
+  panel.innerHTML = `
+    <h4 class="panel-title">${escapeHtml(card.front.playerName)} · ${escapeHtml(card.front.seasonLabel)}</h4>
+    <ul class="panel-facts">
+      <li><span>Data</span><strong>${card.mode === "demo" ? "DEMO DATA" : "Live provider"}</strong></li>
+      <li><span>Snapshot</span><strong>${escapeHtml(card.provenance.snapshotVersionLabel)} · ${escapeHtml(card.provenance.snapshotHashShort)}</strong></li>
+      <li><span>Scrape run</span><strong>${escapeHtml(card.provenance.scrapeRunLabel)} (${escapeHtml(card.provenance.scrapeStatusLabel)})</strong></li>
+      <li><span>Cache</span><strong>${escapeHtml(card.provenance.cacheLabel)}</strong></li>
+    </ul>
+    <div class="panel-actions">
+      <button type="button" class="text-button" data-action="toggle-compare" aria-pressed="${state.compareOn}">
+        ${state.compareOn ? "Hide season comparison" : "Compare with previous season"}
+      </button>
+      <button type="button" class="text-button" data-action="flip">Flip card</button>
+    </div>
+    ${compareRows()}
+    ${
+      card.front.seasonInProgress
+        ? '<p class="panel-note">Current-season cards stay incomplete until the final whistle of the campaign.</p>'
+        : ""
+    }`;
 }
 
 function paintDrawer(): void {
   const body = qs("#drawer-body");
-  if (body === null || state.snapshot === null) return;
-  const reliability = buildReliabilityView({
-    runtime: state.snapshot.runtime,
-    usingFixtureAdapter: state.usingFixtureAdapter,
-    jobsTriggered: state.jobsTriggered,
-    quarantineCount: state.snapshot.quarantines.pagination.total,
-    amendmentCount: state.snapshot.changes.pagination.total,
-    stale: state.snapshot.stale,
-    receivedAt: state.snapshot.receivedAt,
-    collectorId: collectorIdOf(state.snapshot),
-  });
-
-  const timeline: TimelineEntry[] = [...state.sessionLog];
-  for (const club of buildClubViews(sourceList(state.snapshot))) {
-    for (const action of club.recoveryActions) {
-      timeline.push({
-        time: null,
-        title: "Recovery evidence",
-        detail: action,
-        tone: "info",
-      });
-    }
-  }
-
-  const stats: Array<[string, string]> = [
-    ["Collection mode", reliability.modeChip],
-    ["Data label", reliability.dataLabel],
-    ["Collector ID", reliability.collectorIdRedacted],
-    ["Jobs this session", String(reliability.jobsTriggered)],
-    ["Evidence records", String(reliability.evidenceCount)],
-    ["Quarantined", String(reliability.quarantineCount)],
-    ["Amendments", String(reliability.amendmentCount)],
-    ["Last sync", formatTimestamp(reliability.receivedAt)],
-    ["Stale flag", reliability.stale ? "yes" : "no"],
-  ];
-
+  const card = state.card;
+  if (body === null || card === null) return;
+  const p = card.provenance;
   body.innerHTML = `
-    <section aria-label="Reliability facts">
-      <h3>Facts</h3>
+    <section aria-label="Card provenance">
+      <h3>This card</h3>
       <dl class="drawer-stats">
-        ${stats
-          .map(
-            ([label, value]) =>
-              `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`,
-          )
-          .join("")}
+        <div><dt>Source URL</dt><dd>${
+          p.sourceUrl === null
+            ? "not published"
+            : `<a href="${escapeHtml(p.sourceUrl)}" rel="noopener noreferrer" target="_blank">${escapeHtml(p.sourceUrl)}</a>`
+        }</dd></div>
+        <div><dt>Observed</dt><dd>${escapeHtml(formatTimestamp(p.observedAtLabel))}</dd></div>
+        <div><dt>Snapshot</dt><dd>${escapeHtml(p.snapshotVersionLabel)} · ${escapeHtml(p.snapshotHashShort)}</dd></div>
+        <div><dt>Collector</dt><dd>${escapeHtml(p.collectorRedacted)} (redacted)</dd></div>
+        <div><dt>Scrape run</dt><dd>${escapeHtml(p.scrapeRunLabel)} · ${escapeHtml(p.scrapeStatusLabel)}</dd></div>
+        <div><dt>Cache freshness</dt><dd>${escapeHtml(p.cacheLabel)}</dd></div>
       </dl>
     </section>
-    <section aria-label="Recovery timeline">
-      <h3>Timeline</h3>
-      ${
-        timeline.length === 0
-          ? '<p class="drawer-issues">No recovery events yet. Inject drift to watch the same-collector repair chain.</p>'
-          : `<ol class="timeline">${timeline
-              .slice(0, 8)
-              .map(
-                (entry) => `<li class="tone-${entry.tone}">
-                  <time>${entry.time === null ? "Provider evidence" : escapeHtml(formatTimestamp(entry.time))}</time>
-                  <strong>${escapeHtml(entry.title)}</strong>
-                  <p>${escapeHtml(entry.detail)}</p>
-                </li>`,
-              )
-              .join("")}</ol>`
-      }
-    </section>
-    <section aria-label="Configuration notes">
-      <h3>Configuration</h3>
-      ${
-        reliability.issues.length === 0
-          ? '<p class="drawer-issues">No configuration issues reported by the runtime.</p>'
-          : `<ul class="drawer-issues">${reliability.issues
-              .map((issue) => `<li>${escapeHtml(issue)}</li>`)
-              .join("")}</ul>`
-      }
+    <section aria-label="Source health">
+      <h3>Source health</h3>
+      <dl class="drawer-stats">
+        <div><dt>State</dt><dd>${escapeHtml(p.sourceHealthLabel)}</dd></div>
+        <div><dt>Healing</dt><dd>${escapeHtml(p.healingLabel)}</dd></div>
+        <div><dt>Data label</dt><dd>${p.isDemo ? "DEMO DATA" : "Live provider"}</dd></div>
+      </dl>
+      <p class="drawer-note">Operator credentials are held only in tab memory, sent only on protected mutation requests, and never rendered or persisted.</p>
     </section>`;
 }
 
-function paintFooter(): void {
-  const footer = qs("#site-footer");
-  if (footer === null) return;
-  footer.innerHTML = `<span>CardPulse Football · hackathon demo</span>
-    <span>All fields validated against frozen schema v1 before materialization</span>
-    <span>Last sync ${escapeHtml(formatTimestamp(state.snapshot?.receivedAt ?? null))}</span>`;
+function paintOperatorSetup(): void {
+  const status = qs("#index-status");
+  const button = qs<HTMLButtonElement>('[data-action="refresh-index"]');
+  const select = qs<HTMLSelectElement>("#index-season");
+  if (status !== null) status.textContent = state.indexMessage ?? "";
+  if (button !== null) {
+    button.disabled = state.indexRefreshing || isBusy();
+    button.textContent = state.indexRefreshing
+      ? "Refreshing verified index…"
+      : "Refresh live index";
+  }
+  if (select !== null) {
+    select.value = state.indexSeason;
+    select.disabled = state.indexRefreshing;
+  }
 }
 
 function paintAll(): void {
-  paintTopbarTools();
-  paintHeroFacts();
+  // Chrome glitch is bound strictly to real in-flight work.
+  app.classList.toggle("is-busy", isBusy());
+  paintTopbar();
+  paintSearchListbox();
+  paintSeasons();
+  paintActions();
   paintRail();
-  paintConsoleState();
-  paintConsoleActions();
-  paintFootnote();
   paintNotices();
-  paintTeams();
-  paintStandings();
-  paintDrawer();
-  paintFooter();
-  const previousRecovery = state.lastRenderedRecovery;
-  state.lastRenderedRecovery = state.flow.recovery;
-  updateChromeGlitch(previousRecovery);
+  paintOperatorSetup();
+  renderCardStage();
 }
 
 // ---------------------------------------------------------------------------
-// Tilt interaction
+// Search flow
 // ---------------------------------------------------------------------------
+
+let searchDebounceHandle: number | null = null;
+let searchAbort: AbortController | null = null;
+let searchSequence = 0;
+
+function cancelPendingSearch(): void {
+  if (searchDebounceHandle !== null) {
+    window.clearTimeout(searchDebounceHandle);
+    searchDebounceHandle = null;
+  }
+  if (searchAbort !== null) {
+    searchAbort.abort();
+    searchAbort = null;
+  }
+}
+
+function scheduleSearch(rawQuery: string): void {
+  const query = normalizeQuery(rawQuery);
+  state.searchQuery = rawQuery;
+  cancelPendingSearch();
+
+  if (!isSearchableQuery(query)) {
+    state.searchLoading = false;
+    state.searchFailed = false;
+    state.searchHits = [];
+    state.searchOpen = false;
+    state.searchActiveIndex = -1;
+    paintSearchListbox();
+    return;
+  }
+
+  state.searchOpen = true;
+  state.searchLoading = true;
+  paintSearchListbox();
+
+  searchDebounceHandle = window.setTimeout(() => {
+    void executeSearch(query);
+  }, SEARCH_DEBOUNCE_MS);
+}
+
+async function executeSearch(query: string): Promise<void> {
+  const sequence = (searchSequence += 1);
+  searchAbort = new AbortController();
+  try {
+    const payload = await state.client.searchPlayers(
+      query,
+      state.selectedSeason,
+    );
+    if (sequence !== searchSequence) return; // stale response
+    state.searchFailed = false;
+    state.searchLoading = false;
+    state.searchHits = dedupeHits(
+      payload.results.map((hit): SearchOption => ({
+        id: "",
+        playerId: hit.playerId,
+        playerName: hit.playerName,
+        clubName: hit.clubName,
+        positionDisplay:
+          hit.position === null ? "—" : hit.position.toUpperCase().slice(0, 3),
+        seasons: hit.seasons,
+      })),
+    ).map((hit, index) => ({ ...hit, id: optionId(index) }));
+    state.searchOpen = true;
+    state.searchActiveIndex = state.searchHits.length > 0 ? 0 : -1;
+  } catch (error) {
+    if (sequence !== searchSequence) return;
+    if (error instanceof DOMException && error.name === "AbortError") return;
+    state.searchFailed = true;
+    state.searchLoading = false;
+    state.searchHits = [];
+    state.searchActiveIndex = -1;
+  } finally {
+    if (sequence === searchSequence) {
+      searchAbort = null;
+      paintSearchListbox();
+    }
+  }
+}
+
+async function selectHit(hit: SearchOption): Promise<void> {
+  state.selectedHit = hit;
+  state.searchOpen = false;
+  state.searchHits = [];
+  state.searchActiveIndex = -1;
+  state.searchQuery = hit.playerName;
+  if (!state.demoSession) state.client = createLiveClient();
+  state.errorMessage = null;
+  state.compareCard = null;
+  state.compareNote = null;
+  state.seasons = null;
+  state.seasonsError = null;
+  state.selectedSeason = null;
+  state.seasonMessage = null;
+  const input = qs<HTMLInputElement>("#player-input");
+  if (input !== null) input.value = hit.playerName;
+  paintAll();
+
+  try {
+    const payload = await state.client.getPlayerSeasons(hit.playerId);
+    const available = new Set<SeasonKey>();
+    for (const raw of payload.seasons) {
+      const key = parseSeasonKey(raw);
+      if (key !== null) available.add(key);
+    }
+    state.seasons = available;
+    state.selectedSeason = latestAvailableSeason(available);
+    if (state.selectedSeason === null) {
+      state.seasonMessage = `${SEASON_UNAVAILABLE_MESSAGE} No catalog season (${SEASON_KEYS.map(seasonLabel).join(", ")}) has verified data for this player.`;
+    } else {
+      await loadSeasonData(false);
+    }
+  } catch (error) {
+    state.seasons = null;
+    state.seasonsError = `${SEASON_UNAVAILABLE_MESSAGE} (${errorMessage(error)})`;
+  }
+  paintAll();
+}
+
+// ---------------------------------------------------------------------------
+// Season switching + card reads
+// ---------------------------------------------------------------------------
+
+async function loadSeasonData(isSwitch: boolean): Promise<void> {
+  const hit = state.selectedHit;
+  const season = state.selectedSeason;
+  if (hit === null || season === null) return;
+  state.seasonLoading = true;
+  if (isSwitch) state.seasonMessage = null;
+  paintAll();
+
+  try {
+    const record = await state.client.getCard(hit.playerId, season);
+    if (record === null) {
+      // Keep the last printed card visible; explain the gap honestly.
+      state.seasonMessage = `${seasonLabel(season)}: ${SEASON_UNAVAILABLE_MESSAGE}`;
+      state.matchesUnavailable = true;
+      state.sourceHealth = null;
+      return;
+    }
+    applyCard(record);
+    await hydrateMatches(record);
+    state.seasonMessage = null;
+    state.compareCard = null;
+    state.compareNote = null;
+    if (state.compareOn) await refreshCompare();
+  } catch (error) {
+    state.seasonMessage = `Could not read the ${seasonLabel(season)} card: ${errorMessage(error)}`;
+  } finally {
+    state.seasonLoading = false;
+    paintAll();
+  }
+}
+
+function applyCard(record: CardRecord): void {
+  const seasonKey = parseSeasonKey(record.season) ?? "2025";
+  state.card = buildCardBundle({
+    payload: record,
+    matches: [],
+    matchesUnavailable: true,
+    sourceHealth: state.sourceHealth,
+  });
+  state.card.seasonKey = seasonKey;
+  state.flipped = false;
+  void hydrateSourceHealth(record.sourceId);
+}
+
+async function hydrateMatches(record: CardRecord): Promise<void> {
+  try {
+    const matchesPayload = await state.client.getPlayerMatches(
+      record.playerId,
+      record.season,
+    );
+    const seasonKey = parseSeasonKey(record.season) ?? "2025";
+    state.matchesUnavailable = !matchesPayload.available;
+    state.card = buildCardBundle({
+      payload: record,
+      matches: matchesPayload.matches,
+      matchesUnavailable: !matchesPayload.available,
+      sourceHealth: state.sourceHealth,
+    });
+    if (!matchesPayload.available && matchesPayload.reason !== null) {
+      state.card.back.note = matchesPayload.reason;
+    }
+    state.card.seasonKey = seasonKey;
+  } catch {
+    state.matchesUnavailable = true;
+    if (state.card !== null) {
+      const rebuilt = buildCardBundle({
+        payload: record,
+        matches: [],
+        matchesUnavailable: true,
+        sourceHealth: state.sourceHealth,
+      });
+      rebuilt.back.note = "Per-match history could not be loaded right now.";
+      state.card = rebuilt;
+    }
+  }
+}
+
+async function hydrateSourceHealth(sourceId: string | null): Promise<void> {
+  if (sourceId === null) {
+    state.sourceHealth = null;
+    return;
+  }
+  try {
+    state.sourceHealth = await state.client.getSourceHealth(sourceId);
+  } catch {
+    state.sourceHealth = null;
+  }
+  paintDrawer();
+}
+
+async function onSeasonChange(rawKey: string): Promise<void> {
+  const key = parseSeasonKey(rawKey);
+  if (key === null || key === state.selectedSeason) return;
+  if (state.seasons !== null && !state.seasons.has(key)) return;
+  state.selectedSeason = key;
+  state.errorMessage = null;
+  if (state.selectedHit !== null) await loadSeasonData(true);
+  else paintAll();
+}
+
+// ---------------------------------------------------------------------------
+// Generation (explicit) — live/cached by default, demo only on demand
+// ---------------------------------------------------------------------------
+
+async function refreshLiveIndex(): Promise<void> {
+  if (state.indexRefreshing || isBusy()) return;
+  if (state.operatorToken.trim() === "") {
+    state.indexMessage =
+      "Enter the operator token before starting a protected live refresh.";
+    paintOperatorSetup();
+    return;
+  }
+  const client = createLiveClient();
+  state.client = client;
+  state.demoSession = false;
+  state.indexRefreshing = true;
+  state.indexMessage = `Refreshing ${seasonLabel(state.indexSeason)} from the verified registry…`;
+  state.errorMessage = null;
+  paintAll();
+  try {
+    const result = await client.refreshPlayerIndex(state.indexSeason);
+    state.indexMessage = `${result.acceptedCount} verified player row${
+      result.acceptedCount === 1 ? "" : "s"
+    } accepted; ${result.indexedPlayerCount} player${
+      result.indexedPlayerCount === 1 ? "" : "s"
+    } now searchable. ${result.quarantinedCount} quarantined.`;
+    const query = normalizeQuery(state.searchQuery);
+    if (isSearchableQuery(query)) await executeSearch(query);
+  } catch (error) {
+    state.indexMessage = `Index refresh failed: ${errorMessage(error)}`;
+  } finally {
+    state.indexRefreshing = false;
+    paintAll();
+  }
+}
+
+async function activateDemoMode(): Promise<void> {
+  if (isBusy()) return;
+  state.client = new DemoFootballApiClient();
+  state.demoSession = true;
+  state.selectedHit = null;
+  state.seasons = null;
+  state.selectedSeason = null;
+  state.searchHits = [];
+  state.searchActiveIndex = -1;
+  state.card = null;
+  state.compareCard = null;
+  state.compareNote = null;
+  state.sourceHealth = null;
+  state.errorMessage = null;
+  state.indexMessage =
+    "DEMO DATA catalog active. Search Haaland or Taylor Brooks; no provider requests will run.";
+  const query = normalizeQuery(state.searchQuery);
+  if (isSearchableQuery(query)) await executeSearch(query);
+  paintAll();
+}
+
+async function runGeneration(mode: "live" | "demo"): Promise<void> {
+  if (isBusy()) return;
+
+  if (mode === "live" && state.operatorToken.trim() === "") {
+    state.errorMessage =
+      "Open Live operator setup and enter the operator token before a protected live generation.";
+    paintAll();
+    return;
+  }
+
+  if (mode === "demo" && !(state.client instanceof DemoFootballApiClient)) {
+    state.client = new DemoFootballApiClient();
+    state.demoSession = true;
+    state.sourceHealth = null;
+  }
+  if (mode === "live" && state.client instanceof DemoFootballApiClient) {
+    state.client = createLiveClient();
+    state.demoSession = false;
+  }
+  if (mode === "live" && state.client instanceof HttpFootballApiClient) {
+    state.client.setOperatorToken(state.operatorToken.trim());
+  }
+
+  // Both live and demo generation require an explicit player + season.
+  if (state.selectedHit === null || state.selectedSeason === null) {
+    paintAll();
+    return;
+  }
+  const hit = state.selectedHit;
+  const season = state.selectedSeason;
+  if (hit === null || season === null) {
+    paintAll();
+    return;
+  }
+
+  state.errorMessage = null;
+  state.flipped = false;
+  dispatch({ type: "begin", mode });
+  paintAll();
+
+  try {
+    // Steps 1–2: the POST acknowledges both the player lookup and collector.
+    const outcome: GenerateOutcome = await state.client.generateCard({
+      playerId: hit.playerId,
+      season,
+      mode,
+    });
+    dispatch({ type: "player-found" });
+    let record: CardRecord | null;
+    if (outcome.kind === "run") {
+      // Async path: poll the genuine scrape status until it settles.
+      dispatch({ type: "collector-accepted" });
+      paintAll();
+      record = await pollUntilCard(outcome.runId, hit.playerId, season);
+    } else {
+      // Synchronous path: the same response resolved the collector too.
+      dispatch({ type: "collector-accepted" });
+      record = outcome.card;
+    }
+
+    // Step 3: extraction is complete once the record exists.
+    dispatch({ type: "extraction-complete" });
+    // Step 4: structural validation happens now, before anything renders.
+    if (record.playerName.trim() === "") {
+      throw new DataClientError("The returned card omitted the player name.");
+    }
+    dispatch({ type: "validation-passed", cardId: record.playerId });
+    paintAll();
+
+    // Step 5: printing — assemble provenance, match history and the view.
+    await hydrateSourceHealth(record.sourceId);
+    await hydrateMatches(record);
+    state.seasonMessage = null;
+    dispatch({ type: "card-printed", cardId: record.playerId });
+    state.compareCard = null;
+    state.compareNote = null;
+    if (state.compareOn) void refreshCompare();
+  } catch (error) {
+    dispatch({ type: "failed", reason: errorMessage(error) });
+    state.errorMessage = errorMessage(error);
+  } finally {
+    paintAll();
+  }
+}
+
+/** Poll GET /api/scrapes/:runId until terminal; no fake progress, ever. */
+function advanceRailFromScrapeStatus(status: string, runId: string): void {
+  const normalized = status.trim().toLowerCase().replaceAll("-", "_");
+  const rank: Record<string, number> = {
+    finding_player: 0,
+    starting_collector: 1,
+    extracting_statistics: 2,
+    validating_data: 3,
+    printing_card: 4,
+    succeeded: 5,
+  };
+  const observedRank = rank[normalized];
+  if (observedRank === undefined) return;
+  if (observedRank >= 1) dispatch({ type: "player-found" });
+  if (observedRank >= 2) dispatch({ type: "collector-accepted" });
+  if (observedRank >= 3) dispatch({ type: "extraction-complete" });
+  if (observedRank >= 4) {
+    dispatch({ type: "validation-passed", cardId: runId });
+  }
+  paintRail();
+}
+
+async function pollUntilCard(
+  runId: string,
+  playerId: string,
+  season: string,
+): Promise<CardRecord> {
+  let consecutiveFailures = 0;
+  for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
+    let snapshot;
+    try {
+      snapshot = await state.client.getScrapeRun(runId);
+      consecutiveFailures = 0;
+      advanceRailFromScrapeStatus(snapshot.status, runId);
+    } catch (error) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_POLL_FAILURES) throw error;
+      await wait(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (snapshot.progress === "completed") {
+      if (snapshot.card !== null) return snapshot.card;
+      dispatch({ type: "collector-accepted" });
+      const stored = await state.client.getCard(playerId, season);
+      if (stored === null) {
+        throw new DataClientError(
+          "The collector finished but no verified card was stored.",
+        );
+      }
+      return stored;
+    }
+    if (snapshot.progress === "failed") {
+      throw new DataClientError(
+        snapshot.detail === null
+          ? `Collector run ${runId} reported status "${snapshot.status}".`
+          : snapshot.detail,
+      );
+    }
+    await wait(POLL_INTERVAL_MS);
+  }
+  throw new DataClientError(
+    "The collector run did not finish in time — try again shortly.",
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Compare mode
+// ---------------------------------------------------------------------------
+
+function previousSeasonOf(key: SeasonKey): SeasonKey | null {
+  const index = SEASON_KEYS.indexOf(key);
+  return index > 0 ? (SEASON_KEYS[index - 1] ?? null) : null;
+}
+
+async function refreshCompare(): Promise<void> {
+  const card = state.card;
+  if (card === null) {
+    state.compareOn = false;
+    return;
+  }
+  const previousKey = previousSeasonOf(card.seasonKey);
+  if (previousKey === null) {
+    state.compareCard = null;
+    state.compareNote = "This is the earliest season in the catalog.";
+    paintSidePanel();
+    return;
+  }
+  try {
+    const record = await state.client.getCard(card.front.playerId, previousKey);
+    if (record === null) {
+      state.compareCard = null;
+      state.compareNote = `${SEASON_UNAVAILABLE_MESSAGE} (${seasonLabel(previousKey)})`;
+    } else {
+      state.compareCard = buildCardBundle({
+        payload: record,
+        matches: [],
+        matchesUnavailable: true,
+        sourceHealth: null,
+      });
+      state.compareNote = null;
+    }
+  } catch (error) {
+    state.compareCard = null;
+    state.compareNote = `Previous season unavailable: ${errorMessage(error)}`;
+  }
+  paintSidePanel();
+}
+
+async function onToggleCompare(): Promise<void> {
+  state.compareOn = !state.compareOn;
+  paintSidePanel();
+  if (state.compareOn) await refreshCompare();
+}
+
+// ---------------------------------------------------------------------------
+// Flip interaction + pointer tilt
+// ---------------------------------------------------------------------------
+
+function setFlipped(flipped: boolean): void {
+  if (state.card === null) return;
+  state.flipped = flipped;
+  const cardEl = qs<HTMLElement>("#flip-card");
+  if (cardEl !== null) {
+    cardEl.classList.toggle("flipped", flipped);
+    cardEl.setAttribute(
+      "aria-label",
+      flipped
+        ? `Player card, ${state.card.front.playerName}. Back: season-bound match details and goal timeline. Press Enter to return to season totals.`
+        : `Player card, ${state.card.front.playerName}. Front: season totals. Press Enter to flip to match details.`,
+    );
+  }
+  const flipButtons = document.querySelectorAll<HTMLButtonElement>(
+    '[data-action="flip"]',
+  );
+  for (const button of flipButtons) {
+    if (button.getAttribute("aria-pressed") !== null) {
+      button.setAttribute("aria-pressed", String(flipped));
+    }
+  }
+  const status = qs("#card-status");
+  if (status !== null) {
+    status.textContent = flipped
+      ? "Back face: season-bound match details and goal timeline."
+      : "Front face: season totals.";
+  }
+}
 
 function attachTilt(card: HTMLElement | null): void {
-  if (card === null || reducedMotion()) return;
-  const frame = card.querySelector<HTMLElement>("#card-frame");
-  if (frame === null) return;
+  if (card === null) return;
+  if (reducedMotion()) return;
   card.addEventListener("pointermove", (event) => {
     if (event.pointerType === "touch") return;
-    const rect = frame.getBoundingClientRect();
+    const rect = card.getBoundingClientRect();
     const px = (event.clientX - rect.left) / rect.width;
     const py = (event.clientY - rect.top) / rect.height;
-    frame.classList.add("is-tilting");
-    frame.style.setProperty("--ry", `${((px - 0.5) * 12).toFixed(2)}deg`);
-    frame.style.setProperty("--rx", `${((0.5 - py) * 10).toFixed(2)}deg`);
-    frame.style.setProperty("--mx", `${(px * 100).toFixed(1)}%`);
-    frame.style.setProperty("--my", `${(py * 100).toFixed(1)}%`);
+    card.classList.add("tilting");
+    card.style.setProperty("--ry", `${((px - 0.5) * 10).toFixed(2)}deg`);
+    card.style.setProperty("--rx", `${((0.5 - py) * 8).toFixed(2)}deg`);
   });
   card.addEventListener("pointerleave", () => {
-    frame.classList.remove("is-tilting");
-    frame.style.setProperty("--rx", "0deg");
-    frame.style.setProperty("--ry", "0deg");
-    frame.style.setProperty("--mx", "50%");
-    frame.style.setProperty("--my", "50%");
+    card.classList.remove("tilting");
+    card.style.setProperty("--rx", "0deg");
+    card.style.setProperty("--ry", "0deg");
   });
 }
 
-// ---------------------------------------------------------------------------
-// Flows
-// ---------------------------------------------------------------------------
-
-function tokenOptions(): { operatorToken?: string } {
-  return state.operatorToken === ""
-    ? {}
-    : { operatorToken: state.operatorToken };
-}
-
-function collectionMode(): CollectionMode {
-  return state.snapshot?.runtime.mode === "live" && !state.usingFixtureAdapter
-    ? "live"
-    : "valid";
-}
-
-async function connectWithFallback(): Promise<boolean> {
-  try {
-    await loadSnapshot();
-    return true;
-  } catch (error) {
-    if (!state.usingFixtureAdapter) {
-      switchToFixture(
-        `CardPulse API unreachable (${errorMessage(error)}) — switched to the deterministic demo pipeline.`,
-      );
-      await loadSnapshot();
-      return true;
-    }
-    dispatch({ type: "connection-failed", reason: errorMessage(error) });
-    return false;
+function flipFromCardEvent(event: Event): void {
+  const target = event.target;
+  if (
+    target instanceof Element &&
+    target.closest('button, a, input, select, textarea, [role="option"]')
+  ) {
+    return; // inner controls handle themselves
   }
-}
-
-async function runGenerate(): Promise<void> {
-  if (state.busy) return;
-  state.busy = true;
-  state.actionError = null;
-  state.failedStepKey = null;
-  dispatch({ type: "generate-start" });
-  paintAll();
-
-  try {
-    // Phase 1: connecting — runtime handshake via a real load.
-    const connected = await connectWithFallback();
-    if (!connected) return;
-    dispatch({ type: "connection-established" });
-    paintAll();
-    await dwell(520);
-
-    // Phase 2: extracting — real collect call against the configured mode.
-    await state.client.collect(collectionMode(), tokenOptions());
-    state.jobsTriggered += 1;
-    dispatch({ type: "extraction-complete" });
-    paintAll();
-    await dwell(560);
-
-    // Phase 3: validating — reload runs the frozen Zod contract client-side.
-    const fresh = await loadSnapshot();
-    const healingClean = !isCompromisedState(fresh.healing.state);
-    const playerRecord = fresh.players.data[0] ?? null;
-    if (!healingClean || playerRecord === null) {
-      state.failedStepKey = "validating";
-      dispatch({
-        type: "validation-failed",
-        reason: healingClean
-          ? "Extraction returned no verifiable record."
-          : describeHealing(fresh.healing.state),
-        preservedCardId: state.hero?.id ?? null,
-      });
-      pushSessionLog({
-        tone: "bad",
-        title: "Validation blocked",
-        detail: "Candidate output did not pass the frozen contract.",
-      });
-      return;
-    }
-    const candidate = buildPlayerCard(playerRecord, collectorIdOf(fresh));
-    if (candidate === null) {
-      state.failedStepKey = "validating";
-      dispatch({
-        type: "validation-failed",
-        reason: "Card derivation failed for the returned record.",
-        preservedCardId: state.hero?.id ?? null,
-      });
-      return;
-    }
-    dispatch({ type: "validation-passed", cardId: candidate.id });
-    paintAll();
-    await dwell(480);
-
-    // Phase 4: materializing — print plates cut, card enters the DOM.
-    state.hero = candidate;
-    renderCard(candidate);
-    await nextFrame();
-    dispatch({ type: "card-materialized" });
-    pushSessionLog({
-      tone: "good",
-      title: "Card verified",
-      detail: `${candidate.playerName} bound to snapshot v${candidate.provenance.snapshotVersion}.`,
-    });
-  } catch (error) {
-    state.actionError = errorMessage(error);
-    pushSessionLog({
-      tone: "warn",
-      title: "Pipeline error",
-      detail: state.actionError,
-    });
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-}
-
-async function runInjectDrift(): Promise<void> {
-  if (state.busy || state.hero === null) return;
-  state.busy = true;
-  state.actionError = null;
-  paintAll();
-  await dwell(420);
-  try {
-    await state.client.collect("drift", tokenOptions());
-    state.jobsTriggered += 1;
-    await loadSnapshot();
-    dispatch({ type: "drift-confirmed", preservedCardId: state.hero.id });
-    const quarantine = state.snapshot?.quarantines.data[0];
-    pushSessionLog({
-      tone: "warn",
-      title: "Layout drift quarantined",
-      detail:
-        quarantine === undefined
-          ? "Broken extraction could not overwrite the verified card."
-          : (quarantine.issues[0]?.message ?? "Invalid extraction isolated."),
-    });
-  } catch (error) {
-    state.actionError = errorMessage(error);
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-}
-
-async function runRepairRequest(): Promise<void> {
-  if (state.busy) return;
-  state.busy = true;
-  state.actionError = null;
-  paintAll();
-  try {
-    await state.client.progressHealing(tokenOptions());
-    state.jobsTriggered += 1;
-    await loadSnapshot();
-    dispatch({ type: "repair-requested" });
-    pushSessionLog({
-      tone: "info",
-      title: "Repair preview received",
-      detail:
-        "The existing collector was refactored in place and reached the approval preview — identity unchanged.",
-    });
-  } catch (error) {
-    state.actionError = errorMessage(error);
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-}
-
-async function runValidatePreview(): Promise<void> {
-  if (state.busy) return;
-  state.busy = true;
-  state.actionError = null;
-  paintAll();
-  try {
-    await state.client.validatePreview(tokenOptions());
-    await loadSnapshot();
-    const valid = state.snapshot?.healing.state === "preview_valid";
-    dispatch({ type: "preview-resolved", valid });
-    pushSessionLog(
-      valid
-        ? {
-            tone: "good",
-            title: "Preview validated",
-            detail: "Candidate passed schema and count canaries.",
-          }
-        : {
-            tone: "bad",
-            title: "Preview rejected",
-            detail: "Candidate failed the frozen contract. Approval blocked.",
-          },
-    );
-  } catch (error) {
-    state.actionError = errorMessage(error);
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-}
-
-async function runApproveRepair(): Promise<void> {
-  if (state.busy) return;
-  state.busy = true;
-  state.actionError = null;
-  paintAll();
-  try {
-    await state.client.approve(true, tokenOptions());
-    state.jobsTriggered += 1;
-    const fresh = await loadSnapshot();
-    const recovered = fresh.healing.state === "recovered";
-    dispatch({
-      type: "repair-approved",
-      outcome: recovered ? "recovered" : "failed",
-    });
-    if (recovered) {
-      const recoveredRecord =
-        fresh.players.data.find(
-          (record) => record.playerId === state.hero?.id,
-        ) ?? fresh.players.data[0];
-      const recoveredCard = buildPlayerCard(
-        recoveredRecord ?? null,
-        collectorIdOf(fresh),
-      );
-      if (recoveredCard !== null) {
-        state.hero = recoveredCard;
-        renderCard(recoveredCard);
-      }
-      state.bonusPoints += 3;
-      pushSessionLog({
-        tone: "good",
-        title: "Recovered",
-        detail: "Same-collector rerun verified. Hero club earns three points.",
-      });
-    } else {
-      pushSessionLog({
-        tone: "bad",
-        title: "Recovery failed safely",
-        detail: "The verified card remains protected.",
-      });
-    }
-  } catch (error) {
-    state.actionError = errorMessage(error);
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-}
-
-async function runRetryApi(): Promise<void> {
-  if (state.busy) return;
-  state.client = new HttpCardPulseDataClient(configuredApiBase);
-  state.usingFixtureAdapter = false;
-  state.fallbackNotice = null;
-  state.previousTableOrder = [];
-  await runGenerate();
+  setFlipped(!state.flipped);
 }
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
+const searchInput = qs<HTMLInputElement>("#player-input");
+if (searchInput !== null) {
+  searchInput.addEventListener("input", () => {
+    scheduleSearch(searchInput.value);
+  });
+  searchInput.addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent)) return;
+    const action = handleSearchKey(
+      {
+        open: state.searchOpen,
+        activeIndex: state.searchActiveIndex,
+        optionCount: state.searchHits.length,
+      },
+      event.key,
+    );
+    switch (action.type) {
+      case "highlight":
+        event.preventDefault();
+        state.searchOpen = true;
+        state.searchActiveIndex = action.index;
+        paintSearchListbox();
+        break;
+      case "select":
+        event.preventDefault();
+        {
+          const hit = state.searchHits[action.index];
+          if (hit !== undefined) void selectHit(hit);
+        }
+        break;
+      case "close":
+        event.preventDefault();
+        if (state.searchOpen) {
+          state.searchOpen = false;
+          paintSearchListbox();
+        } else {
+          searchInput.value = "";
+          state.searchQuery = "";
+          paintSearchListbox();
+        }
+        break;
+      default:
+        break;
+    }
+  });
+  searchInput.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (state.searchOpen) {
+        state.searchOpen = false;
+        paintSearchListbox();
+      }
+    }, 120);
+  });
+}
+
+const listbox = qs("#player-listbox");
+if (listbox !== null) {
+  listbox.addEventListener("mousedown", (event) => {
+    // Keep focus on the input while choosing an option.
+    event.preventDefault();
+  });
+  listbox.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const option = target.closest<HTMLElement>("[role='option']");
+    const index = Number(option?.dataset.index ?? "-1");
+    const hit = state.searchHits[index];
+    if (hit !== undefined) void selectHit(hit);
+  });
+}
+
+const operatorTokenInput = qs<HTMLInputElement>("#operator-token");
+if (operatorTokenInput !== null) {
+  operatorTokenInput.addEventListener("input", () => {
+    state.operatorToken = operatorTokenInput.value;
+    if (state.client instanceof HttpFootballApiClient) {
+      state.client.setOperatorToken(state.operatorToken.trim());
+    }
+    state.indexMessage = null;
+    paintOperatorSetup();
+  });
+}
+
+const indexSeasonSelect = qs<HTMLSelectElement>("#index-season");
+if (indexSeasonSelect !== null) {
+  indexSeasonSelect.addEventListener("change", () => {
+    const season = parseSeasonKey(indexSeasonSelect.value);
+    if (season !== null) state.indexSeason = season;
+  });
+}
+
 app.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
-  const button = target.closest<HTMLElement>("[data-action]");
-  const action = button?.dataset.action;
-  switch (action) {
-    case "generate":
-      void runGenerate();
-      break;
-    case "inject-drift":
-      void runInjectDrift();
-      break;
-    case "repair-request":
-      void runRepairRequest();
-      break;
-    case "validate-preview":
-      void runValidatePreview();
-      break;
-    case "approve-repair":
-      void runApproveRepair();
-      break;
-    case "retry-api":
-      void runRetryApi();
-      break;
-    default:
-      break;
+  const seasonButton = target.closest<HTMLButtonElement>("button[data-season]");
+  if (seasonButton !== null && !seasonButton.disabled) {
+    void onSeasonChange(seasonButton.dataset.season ?? "");
+    return;
   }
+
+  const actionButton = target.closest<HTMLButtonElement>("button[data-action]");
+  if (actionButton !== null) {
+    switch (actionButton.dataset.action) {
+      case "generate":
+        void runGeneration(state.demoSession ? "demo" : "live");
+        break;
+      case "try-demo":
+        void activateDemoMode();
+        break;
+      case "flip":
+        setFlipped(!state.flipped);
+        break;
+      case "toggle-compare":
+        void onToggleCompare();
+        break;
+      case "retry-search":
+        if (searchInput !== null) scheduleSearch(searchInput.value);
+        break;
+      case "refresh-index":
+        void refreshLiveIndex();
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (target.closest("#flip-card")) flipFromCardEvent(event);
 });
 
-app.addEventListener("input", (event) => {
-  const target = event.target;
-  if (target instanceof HTMLInputElement && target.id === "operator-token") {
-    state.operatorToken = target.value;
-  }
-});
+const flipCardStage = qs("#card-stage");
+if (flipCardStage !== null) {
+  flipCardStage.addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent)) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest("#flip-card") === null) return;
+    // Inner controls keep their own keyboard behaviour.
+    if (
+      target.closest('button, a, input, select, textarea, [role="option"]') !==
+      null
+    )
+      return;
+    event.preventDefault();
+    setFlipped(!state.flipped);
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  const drawer = qs("#reliability-drawer");
+  const drawer = qs("#provenance-drawer");
   if (drawer instanceof HTMLDetailsElement && drawer.open) {
     drawer.open = false;
     drawer.querySelector("summary")?.focus();
   }
 });
 
-// Section reveals
-const revealObserver = new IntersectionObserver(
-  (entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        entry.target.classList.add("in-view");
-        revealObserver.unobserve(entry.target);
-      }
-    }
-  },
-  { threshold: 0.15 },
-);
-
-for (const element of document.querySelectorAll(".reveal")) {
-  revealObserver.observe(element);
-}
-
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
-renderPlaceholder();
 paintAll();
-
-async function boot(): Promise<void> {
-  state.busy = true;
-  paintAll();
-  try {
-    const connected = await connectWithFallback();
-    if (!connected) return;
-    const snapshot = state.snapshot;
-    const player = snapshot?.players.data[0] ?? null;
-    const candidate = buildPlayerCard(
-      player,
-      snapshot === null ? null : collectorIdOf(snapshot),
-    );
-    if (candidate !== null && snapshot !== null) {
-      state.hero = candidate;
-      state.flow = hydrateFlowState(snapshot.healing.state, candidate.id);
-      renderCard(candidate);
-      pushSessionLog({
-        tone: snapshot.healing.state === "healthy" ? "good" : "warn",
-        title: "Verified card restored",
-        detail:
-          snapshot.healing.state === "healthy"
-            ? `Loaded ${candidate.playerName} from snapshot v${candidate.provenance.snapshotVersion}.`
-            : `${candidate.playerName} remains pinned while recovery resumes from ${snapshot.healing.state}.`,
-      });
-      return;
-    }
-  } finally {
-    state.busy = false;
-    paintAll();
-  }
-  await runGenerate();
-}
-
-void boot();

@@ -1,256 +1,178 @@
-// Pure state machine for the two observable CardPulse flows:
+// Pure state machine for the card generation rail.
 //
-// 1. Generate live card:
-//    idle -> connecting -> extracting -> validating -> materializing -> verified
-// 2. Failure / recovery (drift):
-//    verified --drift--> compromised -> repair-requested -> preview-pending
-//      -> preview-valid|preview-invalid -> recovered|recovery-failed
+// The UI shows exactly five operations, in this order:
+//   Finding player -> Starting collector -> Extracting statistics
+//     -> Validating data -> Printing card
 //
-// The UI may only advance through these transitions; every other event is
-// ignored so out-of-order clicks can never fake progress. Phase changes are
-// driven exclusively by resolved async work in the orchestrator.
+// Every transition is driven by a resolved network milestone (request sent,
+// response parsed, poll settled). Nothing advances on a timer, so a stage can
+// never appear complete before the async work that backs it has resolved.
+// While any real request or poll is pending the chrome glitches; it stops
+// instantly when the machine settles into done/failed.
 
-export type GenerationPhase =
-  | "idle"
-  | "connecting"
-  | "extracting"
-  | "validating"
-  | "materializing"
-  | "verified"
-  | "blocked";
+export const RAIL_STEPS = [
+  "finding-player",
+  "starting-collector",
+  "extracting-statistics",
+  "validating-data",
+  "printing-card",
+] as const;
 
-export type RecoveryPhase =
-  | "none"
-  | "compromised"
-  | "repair-requested"
-  | "preview-pending"
-  | "preview-valid"
-  | "preview-invalid"
-  | "approved"
-  | "recovered"
-  | "recovery-failed";
+export type RailStep = (typeof RAIL_STEPS)[number];
 
-export type PersistedHealingState =
-  | "healthy"
-  | "quarantined"
-  | "healing_requested"
-  | "awaiting_approval"
-  | "preview_valid"
-  | "preview_invalid"
-  | "approved"
-  | "rejected"
-  | "recovered"
-  | "recovery_failed";
+export const RAIL_LABELS: Record<RailStep, string> = {
+  "finding-player": "Finding player",
+  "starting-collector": "Starting collector",
+  "extracting-statistics": "Extracting statistics",
+  "validating-data": "Validating data",
+  "printing-card": "Printing card",
+};
+
+export type GenerationMode = "live" | "demo";
+
+export type GenerationState =
+  | { kind: "idle" }
+  | { kind: "running"; step: RailStep; mode: GenerationMode }
+  | { kind: "done"; mode: GenerationMode }
+  | {
+      kind: "failed";
+      step: RailStep | null;
+      reason: string;
+      mode: GenerationMode;
+    };
 
 export interface FlowState {
-  phase: GenerationPhase;
-  recovery: RecoveryPhase;
-  /** Id of the last verified card that must survive drift untouched. */
+  generation: GenerationState;
+  /** Id of the last successfully printed card. Survives every failure. */
   preservedCardId: string | null;
-  error: string | null;
 }
 
 export type FlowEvent =
-  | { type: "generate-start" }
-  | { type: "connection-established" }
-  | { type: "connection-failed"; reason: string }
+  | { type: "begin"; mode: GenerationMode }
+  | { type: "player-found" }
+  | { type: "collector-accepted" }
   | { type: "extraction-complete" }
   | { type: "validation-passed"; cardId: string }
-  | {
-      type: "validation-failed";
-      reason: string;
-      preservedCardId: string | null;
-    }
-  | { type: "card-materialized" }
-  | { type: "drift-confirmed"; preservedCardId: string | null }
-  | { type: "repair-requested" }
-  | { type: "preview-resolved"; valid: boolean }
-  | { type: "repair-approved"; outcome: "recovered" | "failed" }
+  | { type: "card-printed"; cardId: string }
+  | { type: "failed"; reason: string }
   | { type: "reset" };
 
 export function initialFlowState(): FlowState {
-  return {
-    phase: "idle",
-    recovery: "none",
-    preservedCardId: null,
-    error: null,
-  };
-}
-
-/** Rebuild the visual state after a page reload without mutating the API. */
-export function hydrateFlowState(
-  healingState: PersistedHealingState,
-  preservedCardId: string,
-): FlowState {
-  const recoveryByState: Record<PersistedHealingState, RecoveryPhase> = {
-    healthy: "none",
-    quarantined: "compromised",
-    healing_requested: "compromised",
-    awaiting_approval: "repair-requested",
-    preview_valid: "preview-valid",
-    preview_invalid: "preview-invalid",
-    approved: "approved",
-    rejected: "recovery-failed",
-    recovered: "recovered",
-    recovery_failed: "recovery-failed",
-  };
-  return {
-    phase: "verified",
-    recovery: recoveryByState[healingState],
-    preservedCardId,
-    error: null,
-  };
-}
-
-/** Chrome-level glitch is active while the pipeline is not clean. */
-export function isChromeGlitched(state: FlowState): boolean {
-  return state.recovery !== "none" && state.recovery !== "recovered";
-}
-
-const GENERATION_ORDER: readonly GenerationPhase[] = [
-  "idle",
-  "connecting",
-  "extracting",
-  "validating",
-  "materializing",
-  "verified",
-] as const;
-
-/** Ordered steps for the status rail; blocked renders as a failed step. */
-export function railStepIndex(phase: GenerationPhase): number {
-  const index = GENERATION_ORDER.indexOf(phase);
-  return index < 0 ? GENERATION_ORDER.length : index;
+  return { generation: { kind: "idle" }, preservedCardId: null };
 }
 
 export function transition(state: FlowState, event: FlowEvent): FlowState {
+  const generation = state.generation;
+
   switch (event.type) {
-    case "generate-start": {
+    case "begin": {
+      if (generation.kind === "running") return state;
+      return {
+        ...state,
+        generation: {
+          kind: "running",
+          step: "finding-player",
+          mode: event.mode,
+        },
+      };
+    }
+
+    case "player-found": {
       if (
-        state.phase === "idle" ||
-        state.phase === "verified" ||
-        state.phase === "blocked"
+        generation.kind !== "running" ||
+        generation.step !== "finding-player"
       ) {
-        return {
-          ...state,
-          phase: "connecting",
-          error: null,
-        };
+        return state;
       }
-      return withRejection(state, "Generation already in progress");
+      return {
+        ...state,
+        generation: { ...generation, step: "starting-collector" },
+      };
     }
 
-    case "connection-established": {
-      if (state.phase !== "connecting") {
-        return withRejection(state, "Connection confirmed out of order");
+    case "collector-accepted": {
+      // A synchronous generate response may resolve both the player lookup and
+      // the collector start at once; accept it from either pending step.
+      if (
+        generation.kind !== "running" ||
+        (generation.step !== "starting-collector" &&
+          generation.step !== "finding-player")
+      ) {
+        return state;
       }
-      return { ...state, phase: "extracting", error: null };
-    }
-
-    case "connection-failed": {
-      if (state.phase !== "connecting") {
-        return withRejection(state, "Connection failure reported out of order");
-      }
-      return { ...state, phase: "blocked", error: event.reason };
+      return {
+        ...state,
+        generation: { ...generation, step: "extracting-statistics" },
+      };
     }
 
     case "extraction-complete": {
-      if (state.phase !== "extracting") {
-        return withRejection(state, "Extraction finished out of order");
+      if (
+        generation.kind !== "running" ||
+        generation.step !== "extracting-statistics"
+      ) {
+        return state;
       }
-      return { ...state, phase: "validating", error: null };
+      return {
+        ...state,
+        generation: { ...generation, step: "validating-data" },
+      };
     }
 
     case "validation-passed": {
-      if (state.phase !== "validating") {
-        return withRejection(state, "Validation passed out of order");
-      }
-      return {
-        ...state,
-        phase: "materializing",
-        recovery: state.recovery === "none" ? "none" : state.recovery,
-        preservedCardId: event.cardId,
-        error: null,
-      };
-    }
-
-    case "validation-failed": {
-      if (state.phase !== "validating") {
-        return withRejection(state, "Validation failed out of order");
-      }
-      return {
-        ...state,
-        phase: "blocked",
-        recovery: "compromised",
-        preservedCardId: event.preservedCardId ?? state.preservedCardId,
-        error: event.reason,
-      };
-    }
-
-    case "card-materialized": {
-      if (state.phase !== "materializing") {
-        return withRejection(state, "Materialization finished out of order");
-      }
-      // A clean materialization heals any lingering chrome glitch.
-      return { ...state, phase: "verified", recovery: "none", error: null };
-    }
-
-    case "drift-confirmed": {
-      if (state.phase !== "verified") {
-        return withRejection(
-          state,
-          "Drift can only be confirmed on a verified card",
-        );
-      }
-      return {
-        ...state,
-        recovery: "compromised",
-        preservedCardId: event.preservedCardId ?? state.preservedCardId,
-        error: null,
-      };
-    }
-
-    case "repair-requested": {
-      if (state.recovery !== "compromised") {
-        return withRejection(state, "No active compromise to repair");
-      }
-      return { ...state, recovery: "repair-requested", error: null };
-    }
-
-    case "preview-resolved": {
-      if (state.recovery !== "repair-requested") {
-        return withRejection(state, "No repair preview pending validation");
-      }
-      return {
-        ...state,
-        recovery: event.valid ? "preview-valid" : "preview-invalid",
-        error: null,
-      };
-    }
-
-    case "repair-approved": {
       if (
-        state.recovery !== "preview-valid" &&
-        state.recovery !== "preview-invalid"
+        generation.kind !== "running" ||
+        generation.step !== "validating-data"
       ) {
-        return withRejection(
-          state,
-          "Approval requires a validated preview first",
-        );
+        return state;
       }
-      if (event.outcome === "failed") {
-        return { ...state, recovery: "recovery-failed", error: null };
-      }
-      return { ...state, recovery: "recovered", error: null };
+      return { ...state, generation: { ...generation, step: "printing-card" } };
+    }
+
+    case "card-printed": {
+      if (generation.kind !== "running") return state;
+      return {
+        generation: { kind: "done", mode: generation.mode },
+        preservedCardId: event.cardId,
+      };
+    }
+
+    case "failed": {
+      if (generation.kind !== "running") return state;
+      return {
+        ...state,
+        generation: {
+          kind: "failed",
+          step: generation.step,
+          reason: event.reason,
+          mode: generation.mode,
+        },
+      };
     }
 
     case "reset":
       return initialFlowState();
 
     default:
-      return withRejection(state, "Unknown flow event");
+      return state;
   }
 }
 
-function withRejection(state: FlowState, message: string): FlowState {
-  return { ...state, error: message };
+/** Steps strictly before the current one count as completed. */
+export function completedSteps(state: FlowState): ReadonlySet<RailStep> {
+  const done = new Set<RailStep>();
+  if (state.generation.kind === "running") {
+    for (const step of RAIL_STEPS) {
+      if (step === state.generation.step) break;
+      done.add(step);
+    }
+  } else if (state.generation.kind === "done") {
+    for (const step of RAIL_STEPS) done.add(step);
+  }
+  return done;
+}
+
+/** True only while a real request/poll is in flight — drives the glitch. */
+export function isWorkPending(state: FlowState): boolean {
+  return state.generation.kind === "running";
 }

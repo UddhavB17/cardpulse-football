@@ -23,27 +23,10 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-export function pick<T>(random: () => number, items: readonly T[]): T {
-  const index = Math.floor(random() * items.length) % items.length;
-  const value = items[index];
-  if (value === undefined) throw new Error("Cannot pick from an empty pool");
-  return value;
-}
-
-export function intBetween(
-  random: () => number,
-  minInclusive: number,
-  maxInclusive: number,
-): number {
-  return (
-    minInclusive + Math.floor(random() * (maxInclusive - minInclusive + 1))
-  );
-}
-
 /**
- * Redact a collector ID so demos never leak the full identifier.
- * Keeps the first 4 and last 4 characters of anything long enough to be
- * meaningful; shorter IDs keep their first two characters only.
+ * Redact a collector ID so demos never leak the full identifier or any
+ * operator credentials. Keeps the first 4 and last 4 characters of anything
+ * long enough to be meaningful; shorter IDs keep their first two characters.
  */
 export function redactCollectorId(id: string | null | undefined): string {
   if (!id) return "unassigned";
@@ -68,26 +51,11 @@ export function signatureFrom(id: string): string {
   return `${high.slice(0, 4)}-${high.slice(4)}·${low.slice(0, 4)}`;
 }
 
-export function serialNumberFrom(id: string): string {
+export function serialNumberFrom(id: string, seasonSuffix = "26"): string {
   const serial = (hashString(`serial:${id}`) % 9000) + 1000;
-  return `CP-${serial}/26`;
+  return `CP-${serial}/${seasonSuffix}`;
 }
 
-/**
- * Row movement between two orderings.
- * Returns a map keyed by row id where a positive value means the row moved up
- * (improved) by that many places and a negative value means it moved down.
- */
-export function orderShifts(
-  previousOrder: readonly string[],
-  nextOrder: readonly string[],
-): Record<string, number> {
-  const shifts: Record<string, number> = {};
-  previousOrder.forEach((id, previousIndex) => {
-    const nextIndex = nextOrder.indexOf(id);
-    if (nextIndex >= 0 && nextIndex !== previousIndex) {
-      shifts[id] = previousIndex - nextIndex;
-    }
-  });
-  return shifts;
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
