@@ -34,16 +34,15 @@ Chaos modes are `baseline-table`, `drift-cards`, `amended-stats`, and
 
 ## Searchable card flow
 
-With the three processes up, the explicit **Use demo data** path works in mock
-mode with zero provider calls. A new API process has an empty live index until
-an authorized refresh:
+The browser workflow is live-operator only. A new API process has an empty live
+index until an authorized refresh:
 
 ```bash
 curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data' # [] before refresh
 curl -s http://127.0.0.1:4321/api/seasons | jq '[.data[].compId]'   # 745, 596, 776, 791
 ```
 
-Search reads a local cached index. In live mode, open **Live operator setup**
+Search reads a local cached index. Open **Live operator controls**
 in the browser and explicitly refresh one verified season before searching;
 the refresh and a stale/missing generation are protected billable mutations.
 Generation collects the selected player's verified `SeasonMatches` page. If
@@ -82,7 +81,7 @@ use them for new setup.
 ## Commands
 
 ```bash
-pnpm collect          # one live cycle if configured; deterministic mock otherwise
+pnpm collect          # one live cycle if configured; safe mock check otherwise
 pnpm demo:collector   # local validation/quarantine/amendment story
 pnpm check            # lint + typecheck + tests + builds + collector demo
 ```

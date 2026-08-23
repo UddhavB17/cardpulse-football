@@ -3,19 +3,15 @@
 // Every visual phase of the generation rail is gated by resolved network
 // work: the five operations advance only when the requests behind them
 // resolve, never on timers. Failures preserve the last printed card and are
-// always surfaced truthfully; demo data exists only behind its own explicit
-// button and stays labelled everywhere it appears.
+// always surfaced truthfully. The browser experience is live-operator only:
+// protected refresh and generation actions always use the configured provider.
 
 import type {
   CardRecord,
   FootballApiClient,
   GenerateOutcome,
 } from "./data-client";
-import {
-  DataClientError,
-  DemoFootballApiClient,
-  HttpFootballApiClient,
-} from "./data-client";
+import { DataClientError, HttpFootballApiClient } from "./data-client";
 import {
   RAIL_LABELS,
   RAIL_STEPS,
@@ -80,7 +76,6 @@ const MAX_POLL_FAILURES = 3;
 
 interface AppState {
   client: FootballApiClient;
-  demoSession: boolean;
   searchQuery: string;
   searchLoading: boolean;
   searchFailed: boolean;
@@ -110,7 +105,6 @@ interface AppState {
 
 const state: AppState = {
   client: new HttpFootballApiClient(configuredApiBase),
-  demoSession: false,
   searchQuery: "",
   searchLoading: false,
   searchFailed: false,
@@ -135,7 +129,8 @@ const state: AppState = {
   operatorToken: "",
   indexSeason: "2025",
   indexRefreshing: false,
-  indexMessage: null,
+  indexMessage:
+    "Enter the operator token and refresh a season before searching after an API restart.",
 };
 
 function escapeHtml(value: string): string {
@@ -227,9 +222,9 @@ app.innerHTML = `
       </div>
       <p class="season-note" id="season-note" role="status" aria-live="polite"></p>
 
-      <details class="operator-panel" id="operator-panel">
-        <summary>Live operator setup</summary>
-        <p>Live refresh and generation are protected mutations. The token stays in this tab's memory and is sent only to the local CardPulse API.</p>
+      <details class="operator-panel" id="operator-panel" open>
+        <summary>Live operator controls</summary>
+        <p>CardPulse uses the configured live Bright Data provider only. Refresh the player index before searching, then generate a card to scrape that player's latest season statistics.</p>
         <div class="operator-grid">
           <label>Operator token
             <input id="operator-token" type="password" autocomplete="off" spellcheck="false"
@@ -243,7 +238,7 @@ app.innerHTML = `
               <option value="2026">2026/27 · incomplete</option>
             </select>
           </label>
-          <button class="btn btn-dark" type="button" data-action="refresh-index">Refresh live index</button>
+          <button class="btn btn-dark" type="button" data-action="refresh-index">Scrape live player index</button>
         </div>
         <p id="index-status" class="operator-status" role="status" aria-live="polite"></p>
         <p class="operator-warning">This explicit action can start one billable Bright Data collection. Typing in search never does.</p>
@@ -267,7 +262,7 @@ app.innerHTML = `
     </details>
   </main>
   <footer class="site-footer shell">
-    <span>CardPulse Football · unofficial hackathon demo</span>
+    <span>CardPulse Football · unofficial hackathon project</span>
     <span>All stats validated structurally before printing</span>
     <span>No player photography, crests or club assets are used</span>
   </footer>
@@ -281,8 +276,8 @@ function paintTopbar(): void {
   const target = qs("#topbar-tools");
   if (target === null) return;
   target.innerHTML = `
-    <span class="chip ${state.demoSession ? "demo" : "live"}">
-      <span class="dot" aria-hidden="true"></span>${state.demoSession ? "Demo data" : "Live provider"}
+    <span class="chip live">
+      <span class="dot" aria-hidden="true"></span>Live operator only
     </span>
     <span class="chip chip-outline">Unofficial</span>`;
 }
@@ -424,16 +419,10 @@ function paintActions(): void {
   const ready = state.selectedHit !== null && state.selectedSeason !== null;
   const busy = isBusy();
   const generateDisabled = !ready || busy;
-  // Activating the demo catalog is always available; generation still needs
-  // an explicit player and season selection.
   target.innerHTML = `
     <button class="btn btn-primary" type="button" data-action="generate"
       ${generateDisabled ? "disabled" : ""} ${busy ? 'aria-busy="true"' : ""}>
-      ${boltIcon()} ${busy ? "Generating…" : "Generate card"}
-    </button>
-    <button class="btn btn-demo" type="button" data-action="try-demo"
-      ${busy ? "disabled" : ""}>
-      Use demo data
+      ${boltIcon()} ${busy ? "Scraping live stats…" : "Generate live card"}
     </button>
     ${
       state.card !== null
@@ -491,14 +480,6 @@ function paintNotices(): void {
         <button type="button" class="text-button" data-action="generate">Retry generation</button>`,
     });
   }
-  if (state.demoSession) {
-    banners.push({
-      tone: "warn",
-      role: "status",
-      html: `<strong>Demo data.</strong> You asked for the offline demo dataset — every card carries a
-        DEMO DATA stamp until you generate from the live source again.`,
-    });
-  }
   region.innerHTML = banners
     .map(
       (banner) =>
@@ -543,9 +524,6 @@ function renderCardStage(): void {
 
   const front = card.front;
   const back = card.back;
-  const demoBadge = front.isDemo
-    ? `<span class="demo-badge" role="note">DEMO DATA</span>`
-    : "";
   const progressBadge = front.seasonInProgress
     ? `<span class="progress-badge">Season in progress</span>`
     : "";
@@ -580,7 +558,7 @@ function renderCardStage(): void {
           ${crestSvg({ initials: escapeHtml(front.clubCode), halftoneId: `ht-front-${front.playerId.replace(/[^a-z0-9]/gi, "")}` })}
           ${athleteSvg({ halftoneId: "ht-athlete" })}
           <span class="card-number" aria-hidden="true">${front.shirtNumber ?? "—"}</span>
-          ${demoBadge}${progressBadge}
+          ${progressBadge}
         </div>
         <div class="card-body">
           <h3 class="player-name chromatic">${escapeHtml(front.playerName)}</h3>
@@ -681,7 +659,7 @@ function paintSidePanel(): void {
   panel.innerHTML = `
     <h4 class="panel-title">${escapeHtml(card.front.playerName)} · ${escapeHtml(card.front.seasonLabel)}</h4>
     <ul class="panel-facts">
-      <li><span>Data</span><strong>${card.mode === "demo" ? "DEMO DATA" : "Live provider"}</strong></li>
+      <li><span>Data</span><strong>Live provider</strong></li>
       <li><span>Snapshot</span><strong>${escapeHtml(card.provenance.snapshotVersionLabel)} · ${escapeHtml(card.provenance.snapshotHashShort)}</strong></li>
       <li><span>Scrape run</span><strong>${escapeHtml(card.provenance.scrapeRunLabel)} (${escapeHtml(card.provenance.scrapeStatusLabel)})</strong></li>
       <li><span>Cache</span><strong>${escapeHtml(card.provenance.cacheLabel)}</strong></li>
@@ -726,7 +704,7 @@ function paintDrawer(): void {
       <dl class="drawer-stats">
         <div><dt>State</dt><dd>${escapeHtml(p.sourceHealthLabel)}</dd></div>
         <div><dt>Healing</dt><dd>${escapeHtml(p.healingLabel)}</dd></div>
-        <div><dt>Data label</dt><dd>${p.isDemo ? "DEMO DATA" : "Live provider"}</dd></div>
+        <div><dt>Data label</dt><dd>Live provider</dd></div>
       </dl>
       <p class="drawer-note">Operator credentials are held only in tab memory, sent only on protected mutation requests, and never rendered or persisted.</p>
     </section>`;
@@ -740,8 +718,8 @@ function paintOperatorSetup(): void {
   if (button !== null) {
     button.disabled = state.indexRefreshing || isBusy();
     button.textContent = state.indexRefreshing
-      ? "Refreshing verified index…"
-      : "Refresh live index";
+      ? "Scraping verified index…"
+      : "Scrape live player index";
   }
   if (select !== null) {
     select.value = state.indexSeason;
@@ -850,7 +828,7 @@ async function selectHit(hit: SearchOption): Promise<void> {
   state.searchHits = [];
   state.searchActiveIndex = -1;
   state.searchQuery = hit.playerName;
-  if (!state.demoSession) state.client = createLiveClient();
+  state.client = createLiveClient();
   state.errorMessage = null;
   state.compareCard = null;
   state.compareNote = null;
@@ -988,7 +966,7 @@ async function onSeasonChange(rawKey: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Generation (explicit) — live/cached by default, demo only on demand
+// Generation (explicit) — live operator workflow only
 // ---------------------------------------------------------------------------
 
 async function refreshLiveIndex(): Promise<void> {
@@ -1001,7 +979,6 @@ async function refreshLiveIndex(): Promise<void> {
   }
   const client = createLiveClient();
   state.client = client;
-  state.demoSession = false;
   state.indexRefreshing = true;
   state.indexMessage = `Refreshing ${seasonLabel(state.indexSeason)} from the verified registry…`;
   state.errorMessage = null;
@@ -1023,51 +1000,19 @@ async function refreshLiveIndex(): Promise<void> {
   }
 }
 
-async function activateDemoMode(): Promise<void> {
-  if (isBusy()) return;
-  state.client = new DemoFootballApiClient();
-  state.demoSession = true;
-  state.selectedHit = null;
-  state.seasons = null;
-  state.selectedSeason = null;
-  state.searchHits = [];
-  state.searchActiveIndex = -1;
-  state.card = null;
-  state.compareCard = null;
-  state.compareNote = null;
-  state.sourceHealth = null;
-  state.errorMessage = null;
-  state.indexMessage =
-    "DEMO DATA catalog active. Search Haaland or Taylor Brooks; no provider requests will run.";
-  const query = normalizeQuery(state.searchQuery);
-  if (isSearchableQuery(query)) await executeSearch(query);
-  paintAll();
-}
-
-async function runGeneration(mode: "live" | "demo"): Promise<void> {
+async function runGeneration(): Promise<void> {
   if (isBusy()) return;
 
-  if (mode === "live" && state.operatorToken.trim() === "") {
+  if (state.operatorToken.trim() === "") {
     state.errorMessage =
-      "Open Live operator setup and enter the operator token before a protected live generation.";
+      "Enter the operator token before starting a protected live scrape.";
     paintAll();
     return;
   }
 
-  if (mode === "demo" && !(state.client instanceof DemoFootballApiClient)) {
-    state.client = new DemoFootballApiClient();
-    state.demoSession = true;
-    state.sourceHealth = null;
-  }
-  if (mode === "live" && state.client instanceof DemoFootballApiClient) {
-    state.client = createLiveClient();
-    state.demoSession = false;
-  }
-  if (mode === "live" && state.client instanceof HttpFootballApiClient) {
-    state.client.setOperatorToken(state.operatorToken.trim());
-  }
+  state.client = createLiveClient();
 
-  // Both live and demo generation require an explicit player + season.
+  // Live generation requires an explicit player + verified season.
   if (state.selectedHit === null || state.selectedSeason === null) {
     paintAll();
     return;
@@ -1081,7 +1026,7 @@ async function runGeneration(mode: "live" | "demo"): Promise<void> {
 
   state.errorMessage = null;
   state.flipped = false;
-  dispatch({ type: "begin", mode });
+  dispatch({ type: "begin", mode: "live" });
   paintAll();
 
   try {
@@ -1089,7 +1034,7 @@ async function runGeneration(mode: "live" | "demo"): Promise<void> {
     const outcome: GenerateOutcome = await state.client.generateCard({
       playerId: hit.playerId,
       season,
-      mode,
+      mode: "live",
     });
     dispatch({ type: "player-found" });
     let record: CardRecord | null;
@@ -1418,10 +1363,7 @@ app.addEventListener("click", (event) => {
   if (actionButton !== null) {
     switch (actionButton.dataset.action) {
       case "generate":
-        void runGeneration(state.demoSession ? "demo" : "live");
-        break;
-      case "try-demo":
-        void activateDemoMode();
+        void runGeneration();
         break;
       case "flip":
         setFlipped(!state.flipped);

@@ -28,7 +28,7 @@ export const RAIL_LABELS: Record<RailStep, string> = {
   "printing-card": "Printing card",
 };
 
-export type GenerationMode = "live" | "demo";
+export type GenerationMode = "live";
 
 export type GenerationState =
   | { kind: "idle" }

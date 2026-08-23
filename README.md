@@ -4,11 +4,11 @@
 
 CardPulse turns scraped football statistics into animated, game-style player
 cards — and keeps the data trustworthy when the source page changes shape.
-This branch transforms the one-player demo into a **searchable Premier League
+This branch transforms the one-player prototype into a **searchable Premier League
 card generator**: search a real player by name, pick a verified season, and
 generate the front/back card through a real or cached Bright Data collection.
 
-The demo intentionally combines a high-impact visual reveal with a reliability
+The project combines a high-impact visual reveal with a reliability
 story that is central to scraping: search over a local cached index (never a
 paid per-keystroke call), collect public football rows only on explicit
 generate, validate every record, preserve the last verified card during layout
@@ -16,8 +16,8 @@ drift or provider failure, repair the **same** Bright Data Scraper Studio
 collector, require a valid preview and human approval, rerun it, and show
 evidence of recovery.
 
-The default local experience is deterministic and clearly labelled. The Bright
-Data provider path has one redacted credentialed trail proving the earlier
+The judge-facing browser experience is live-operator only. The Bright Data
+provider path has one redacted credentialed trail proving the earlier
 10-row StatBunker same-collector repair (real failure → rejected invalid
 preview → corrected same-ID repair → approval → 10-row rerun → 10/10 mapping).
 A browser/API live-mode recording of the new searchable flow and a narrow paid
@@ -46,7 +46,8 @@ product.
 
 ## Judge-facing experience
 
-Open the app, type **Erling Haaland** into the search box, choose a verified
+Open the app, enter the operator token, refresh a verified season, type
+**Erling Haaland** into the search box, choose a verified
 season, and press generate. The card renders front (identity, club, position,
 season headline stats) and back (verified match/goal history, provenance,
 snapshot hash) with an explicit flip control. Multiple seasons of the same player can be
@@ -54,11 +55,13 @@ generated side by side for comparison, each carrying its source provenance.
 
 The main flow is:
 
-1. **Search** — an ARIA combobox queries a local cached player index; no
+1. **Authorize and refresh** — the operator token unlocks one explicit live
+   Bright Data player-index scrape for a verified season.
+2. **Search** — an ARIA combobox queries that validated cached player index; no
    provider call happens per keystroke.
-2. **Choose season** — only seasons in the verified registry are offered;
+3. **Choose season** — only seasons in the verified registry are offered;
    unknown seasons fail closed instead of guessing a URL.
-3. **Generate** — one explicit action triggers either a real Bright Data
+4. **Generate** — one explicit operator action triggers either a real Bright Data
    collection (billable) or serves a previously collected validated snapshot
    from cache; run status is polled asynchronously and every stage shown is
    truthful (`finding_player → starting_collector → extracting_statistics →
@@ -68,18 +71,13 @@ validating_data → printing_card`, followed by `succeeded` or `failed`).
    provider run, accepts exactly one numeric player ID, and then extracts its
    canonical season-match table. Mixed, partial, or wrong-season identities
    fail closed.
-4. **Inspect the card** — front/back flip, season comparison, and per-card
+5. **Inspect the card** — front/back flip, season comparison, and per-card
    match history plus provenance: source URL, collector shape, snapshot
    version, and hash.
-5. **Inject layout drift / break the source** — bad output is quarantined and
-   the last verified card stays on screen; default/live failures never become
-   fixture or demo data.
-6. **Heal** — same-collector refactor preview, schema/count gate, explicit
+6. **Inject layout drift / break the source** — bad output is quarantined and
+   the last verified card stays on screen; failures never replace verified data.
+7. **Heal** — same-collector refactor preview, schema/count gate, explicit
    approval, rerun, recovery evidence.
-
-Demo data requires an explicit demo action and stays under a persistent
-`DEMO DATA` label; it is never silently substituted for a failed real or live
-collection.
 
 The web app keeps its original comic-print visual system: halftone texture,
 chromatic separation, angular wipes, card tilt, and a controlled glitch while
@@ -167,12 +165,11 @@ pnpm start:api
 pnpm dev:web
 ```
 
-Open `http://127.0.0.1:4173`. With no credentials, the dashboard and API both
-say `mock`; no external request or billable mutation is made. Choose **Use
-demo data** for the zero-cost Haaland flow. A fresh live process has an empty
-in-memory index until an explicit operator-gated season refresh; search itself
-never bills, and stale/missing generation bills only after the protected
-Generate action.
+Open `http://127.0.0.1:4173`. The browser is live-operator only. With blank
+credentials the API stays safely in `mock` mode and protected browser actions
+fail closed. A fresh live process has an empty in-memory index until an explicit
+operator-gated season refresh; search itself never bills, and stale/missing
+generation bills only after the protected Generate action.
 
 For hosting, use the checked-in [Render Blueprint](render.yaml) or follow the
 [manual Render deployment settings](docs/render-deployment.md). The production
@@ -237,8 +234,8 @@ changing under one stable URL.
 ## Data and attribution
 
 The local demo contains a clearly stamped Haaland identity with synthetic demo
-totals, additional fictional players/clubs, and original SVG/CSS art. Demo
-numbers are never presented as live observations.
+totals, additional fictional players/clubs, and original SVG/CSS art. These
+fixtures are test-only and are never exposed by the live browser workflow.
 Its football record model is inspired by
 [OpenLigaDB](https://www.openligadb.de/), whose published database is offered
 under the [Open Database License (ODbL)](https://www.openligadb.de/lizenz).

@@ -4,7 +4,7 @@
 // only `src/data-client.ts` talks HTTP, and `src/football/mapping.ts` turns
 // normalized payloads into these views.
 
-export type DataMode = "live" | "demo";
+export type DataMode = "live";
 
 export interface PaletteView {
   /** Team-inspired decorative hues, deterministic per club name. */
@@ -63,7 +63,6 @@ export interface CardFrontView {
   totals: StatTotals;
   attributes: AttributeLine[];
   verifiedAtLabel: string | null;
-  isDemo: boolean;
   seasonInProgress: boolean;
 }
 
@@ -101,7 +100,6 @@ export interface ProvenanceView {
   cacheLabel: string;
   sourceHealthLabel: string;
   healingLabel: string;
-  isDemo: boolean;
 }
 
 export interface CardBundle {

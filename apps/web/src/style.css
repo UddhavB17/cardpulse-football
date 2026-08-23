@@ -262,11 +262,6 @@ h1 {
   box-shadow: 0 0 0 3px var(--pitch-soft);
 }
 
-.chip.demo .dot {
-  background: var(--gold);
-  box-shadow: 0 0 0 3px var(--gold-soft);
-}
-
 .chip-outline {
   background: transparent;
   border-style: dashed;
@@ -650,11 +645,6 @@ h1 {
 .btn-primary {
   color: var(--paper);
   background: var(--accent-red);
-}
-
-.btn-demo {
-  color: var(--ink);
-  background: var(--gold-soft);
 }
 
 .btn-dark {
@@ -1076,7 +1066,6 @@ h1 {
   user-select: none;
 }
 
-.demo-badge,
 .progress-badge {
   position: absolute;
   top: 10px;
@@ -1090,11 +1079,6 @@ h1 {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   transform: rotate(6deg);
-}
-
-.demo-badge {
-  color: var(--accent-red-deep);
-  background: rgb(251 247 236 / 88%);
 }
 
 .progress-badge {

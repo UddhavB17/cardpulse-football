@@ -105,11 +105,9 @@ describe("card front", () => {
     expect(front.attributes.every((a) => a.pct > 0 && a.pct <= 100)).toBe(true);
   });
 
-  it("flags demo cards and the in-progress current season", () => {
-    const demo = buildCardFront({ ...card, mode: "demo", season: "2026" });
-    expect(demo.isDemo).toBe(true);
-    expect(demo.seasonInProgress).toBe(true);
-    expect(buildCardFront(card).isDemo).toBe(false);
+  it("flags the in-progress current season", () => {
+    const current = buildCardFront({ ...card, season: "2026" });
+    expect(current.seasonInProgress).toBe(true);
   });
 
   it("maps positions and derives club codes", () => {
@@ -190,7 +188,6 @@ describe("provenance view", () => {
     expect(view.cacheLabel).toContain("42s old");
     expect(view.sourceHealthLabel).toBe("healthy");
     expect(view.healingLabel).toMatch(/no healing events/i);
-    expect(view.isDemo).toBe(false);
   });
 
   it("stays truthful when provenance fields are absent", () => {
@@ -222,17 +219,5 @@ describe("card bundle", () => {
     expect(bundle.provenance.collectorRedacted).toBe("c_st••••3a17");
     expect(bundle.seasonKey).toBe("2025");
     expect(bundle.mode).toBe("live");
-  });
-
-  it("keeps demo bundles labelled demo end to end", () => {
-    const bundle = buildCardBundle({
-      payload: { ...card, mode: "demo" },
-      matches: [],
-      matchesUnavailable: true,
-      sourceHealth: null,
-    });
-    expect(bundle.mode).toBe("demo");
-    expect(bundle.front.isDemo).toBe(true);
-    expect(bundle.provenance.isDemo).toBe(true);
   });
 });

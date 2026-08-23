@@ -3,7 +3,6 @@ import { validSourceHealthListResponseFixture } from "@bidsentinel/contracts/fix
 
 import {
   DataClientError,
-  DemoFootballApiClient,
   HttpFootballApiClient,
   normalizeCardEnvelope,
   normalizeGenerateOutcome,
@@ -161,12 +160,12 @@ describe("card payload normalization", () => {
     ).toThrow(DataClientError);
   });
 
-  it("labels demo mode only on an explicit demo marker", () => {
-    expect(
+  it("refuses demo-marked cards in the live-only interface", () => {
+    expect(() =>
       normalizeCardEnvelope({
         data: { playerId: "p", playerName: "P", club: "C", mode: "demo" },
-      }).mode,
-    ).toBe("demo");
+      }),
+    ).toThrow("live-only CardPulse interface refused a demo-data card");
   });
 });
 
@@ -477,82 +476,5 @@ describe("HTTP transport behaviour", () => {
     expect(health?.activeIncidentReason).toBeNull();
     expect(health?.healingState).toContain("recovery evidence");
     await expect(client.getSourceHealth("unknown-source")).resolves.toBeNull();
-  });
-});
-
-describe("demo adapter honesty", () => {
-  it("includes Haaland and disambiguates duplicate names without losing the demo label", async () => {
-    const demo = new DemoFootballApiClient();
-    const haaland = await demo.searchPlayers("HAALAND", null);
-    expect(haaland.results[0]).toMatchObject({
-      playerName: "Erling Haaland",
-      clubName: "Manchester City",
-    });
-
-    const duplicates = await demo.searchPlayers("Taylor Brooks", "2025");
-    expect(duplicates.results.map((player) => player.clubName)).toEqual([
-      "Kingsley Rovers FC",
-      "Harbour Athletic FC",
-    ]);
-
-    const switched = await demo.getCard(haaland.results[0]!.playerId, "2024");
-    expect(switched?.mode).toBe("demo");
-  });
-
-  it("serves deterministic fictional players with labelled demo cards", async () => {
-    const demo = new DemoFootballApiClient();
-    const search = await demo.searchPlayers("marchetti", null);
-    expect(search.results[0]).toMatchObject({
-      playerName: "Rio Marchetti",
-      clubName: "Northgate United",
-    });
-
-    const seasons = await demo.getPlayerSeasons(search.results[0]!.playerId);
-    expect(seasons.seasons.length).toBeGreaterThan(0);
-
-    const outcome = await demo.generateCard({
-      playerId: search.results[0]!.playerId,
-      season: seasons.seasons.at(-1)!,
-      mode: "demo",
-    });
-    if (outcome.kind !== "card") throw new Error("expected a direct demo card");
-    expect(outcome.card.mode).toBe("demo");
-    expect(outcome.card.sourceUrl).toContain("demo.cardpulse.local");
-
-    const again = await demo.generateCard({
-      playerId: search.results[0]!.playerId,
-      season: seasons.seasons.at(-1)!,
-      mode: "demo",
-    });
-    if (again.kind !== "card") throw new Error("expected a direct demo card");
-    expect(again.card.totals).toEqual(outcome.card.totals);
-  });
-
-  it("keeps demo match scores consistent with the player's goals", async () => {
-    const demo = new DemoFootballApiClient();
-    const haaland = await demo.searchPlayers("haaland", "2025");
-    const matches = await demo.getPlayerMatches(
-      haaland.results[0]!.playerId,
-      "2025",
-    );
-    expect(matches.available).toBe(true);
-    for (const match of matches.matches) {
-      if (match.goals !== null && match.scoreFor !== null) {
-        expect(match.scoreFor).toBeGreaterThanOrEqual(match.goals);
-      }
-    }
-  });
-
-  it("filters by season availability and rejects unknown ids", async () => {
-    const demo = new DemoFootballApiClient();
-    const scoped = await demo.searchPlayers("ferreyra", "2026");
-    expect(scoped.results).toHaveLength(1);
-    const unscopedSeason = await demo.searchPlayers("ramanathan", "2023");
-    expect(unscopedSeason.results).toHaveLength(0);
-
-    await expect(demo.getPlayerSeasons("demo:none")).rejects.toMatchObject({
-      status: 404,
-    });
-    await expect(demo.getCard("demo:none", "2025")).resolves.toBeNull();
   });
 });

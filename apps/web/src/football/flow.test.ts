@@ -79,7 +79,7 @@ describe("generation flow", () => {
 
   it("ignores out-of-order milestones instead of faking progress", () => {
     const rejected = run(initialFlowState(), [
-      { type: "begin", mode: "demo" },
+      { type: "begin", mode: "live" },
       { type: "extraction-complete" },
     ]);
     expect(rejected.generation).toMatchObject({
@@ -150,7 +150,7 @@ describe("generation flow", () => {
 
     const done = transition(
       run(initialFlowState(), [
-        { type: "begin", mode: "demo" },
+        { type: "begin", mode: "live" },
         { type: "player-found" },
         { type: "collector-accepted" },
         { type: "extraction-complete" },
@@ -159,15 +159,6 @@ describe("generation flow", () => {
       { type: "card-printed", cardId: "d1" },
     );
     expect(isWorkPending(done)).toBe(false);
-  });
-
-  it("keeps demo and live runs independent of each other's labels", () => {
-    const demoDone = run(initialFlowState(), [
-      { type: "begin", mode: "demo" },
-      { type: "card-printed", cardId: "demo-1" },
-    ]);
-    if (demoDone.generation.kind !== "done") throw new Error("expected done");
-    expect(demoDone.generation.mode).toBe("demo");
   });
 
   it("reset returns to a clean machine without a preserved id", () => {

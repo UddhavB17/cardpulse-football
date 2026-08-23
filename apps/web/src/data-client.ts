@@ -14,7 +14,6 @@ import {
   type SourceHealthListResponse,
   type RuntimeStatus,
 } from "@bidsentinel/contracts";
-import { hashString, mulberry32 } from "./football/util";
 
 export class DataClientError extends Error {
   constructor(
@@ -74,7 +73,7 @@ export interface CardRecord {
   shirtNumber: number | null;
   clubName: string;
   season: string;
-  mode: "live" | "demo";
+  mode: "live";
   totals: {
     appearances: number | null;
     goals: number | null;
@@ -211,8 +210,6 @@ function seasonStrings(value: unknown[]): string[] {
   }
   return out;
 }
-
-// ---------------------------------------------------------------------------
 // Normalizers (one per endpoint; exported for contract-handling tests)
 // ---------------------------------------------------------------------------
 
@@ -367,6 +364,11 @@ export function normalizeCardEnvelope(value: unknown): CardRecord {
 
   const mode = firstString(body, ["mode"]);
   const originLabel = firstString(provenance, ["dataOriginLabel"]);
+  if (mode === "demo" || originLabel?.toUpperCase() === "DEMO DATA") {
+    throw new DataClientError(
+      "The live-only CardPulse interface refused a demo-data card",
+    );
+  }
   return {
     playerId,
     playerName,
@@ -374,10 +376,7 @@ export function normalizeCardEnvelope(value: unknown): CardRecord {
     shirtNumber: firstNumber(body, ["shirtNumber", "shirt"]),
     clubName,
     season: firstString(body, ["season"]) ?? "",
-    mode:
-      mode === "demo" || originLabel?.toUpperCase() === "DEMO DATA"
-        ? "demo"
-        : "live",
+    mode: "live",
     totals,
     sourceUrl:
       firstString(provenance, ["sourceUrl", "url", "source"]) ??
@@ -571,7 +570,7 @@ function joinUrl(baseUrl: string, path: string): string {
 export interface GenerateRequest {
   playerId: string;
   season: string;
-  mode: "live" | "demo";
+  mode: "live";
 }
 
 export interface FootballApiClient {
@@ -803,476 +802,5 @@ export class HttpFootballApiClient implements FootballApiClient {
     }
     const body = await readJson(response);
     return { status: response.status, body };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Explicit demo adapter — used ONLY when the visitor presses "Use demo data".
-// It serves a deterministic fictional dataset so the experience can be judged
-// offline; everything it produces is labelled DEMO DATA downstream.
-// ---------------------------------------------------------------------------
-
-interface DemoPlayer {
-  playerId: string;
-  playerName: string;
-  clubName: string;
-  position: string;
-  shirtNumber: number;
-  seasons: string[];
-  totalsBySeason: Record<
-    string,
-    {
-      appearances: number | null;
-      goals: number | null;
-      assists: number | null;
-      yellowCards: number | null;
-      redCards: number | null;
-      minutesPlayed: number | null;
-    }
-  >;
-}
-
-const DEMO_PLAYERS: readonly DemoPlayer[] = [
-  {
-    playerId: "demo:player:erling-haaland",
-    playerName: "Erling Haaland",
-    clubName: "Manchester City",
-    position: "forward",
-    shirtNumber: 9,
-    seasons: ["2023", "2024", "2025"],
-    totalsBySeason: {
-      "2023": {
-        appearances: 31,
-        goals: 27,
-        assists: 5,
-        yellowCards: 1,
-        redCards: 0,
-        minutesPlayed: 2554,
-      },
-      "2024": {
-        appearances: 31,
-        goals: 22,
-        assists: 3,
-        yellowCards: 2,
-        redCards: 0,
-        minutesPlayed: 2776,
-      },
-      "2025": {
-        appearances: 28,
-        goals: 19,
-        assists: 6,
-        yellowCards: 2,
-        redCards: 0,
-        minutesPlayed: 2380,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:taylor-brooks-kingsley",
-    playerName: "Taylor Brooks",
-    clubName: "Kingsley Rovers FC",
-    position: "defender",
-    shirtNumber: 4,
-    seasons: ["2024", "2025"],
-    totalsBySeason: {
-      "2024": {
-        appearances: 35,
-        goals: 2,
-        assists: 1,
-        yellowCards: 6,
-        redCards: 0,
-        minutesPlayed: 3060,
-      },
-      "2025": {
-        appearances: 34,
-        goals: 3,
-        assists: 2,
-        yellowCards: 5,
-        redCards: 0,
-        minutesPlayed: 2940,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:taylor-brooks-harbour",
-    playerName: "Taylor Brooks",
-    clubName: "Harbour Athletic FC",
-    position: "midfielder",
-    shirtNumber: 8,
-    seasons: ["2025"],
-    totalsBySeason: {
-      "2025": {
-        appearances: 32,
-        goals: 7,
-        assists: 9,
-        yellowCards: 4,
-        redCards: 0,
-        minutesPlayed: 2610,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:marchetti",
-    playerName: "Rio Marchetti",
-    clubName: "Northgate United",
-    position: "midfielder",
-    shirtNumber: 8,
-    seasons: ["2024", "2025", "2026"],
-    totalsBySeason: {
-      "2024": {
-        appearances: 31,
-        goals: 4,
-        assists: 7,
-        yellowCards: 3,
-        redCards: 0,
-        minutesPlayed: 2588,
-      },
-      "2025": {
-        appearances: 34,
-        goals: 9,
-        assists: 11,
-        yellowCards: 2,
-        redCards: 0,
-        minutesPlayed: 2971,
-      },
-      "2026": {
-        appearances: 3,
-        goals: 1,
-        assists: 2,
-        yellowCards: 0,
-        redCards: 0,
-        minutesPlayed: 262,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:oduya",
-    playerName: "Callum Oduya",
-    clubName: "Harbor City FC",
-    position: "forward",
-    shirtNumber: 9,
-    seasons: ["2023", "2024", "2025"],
-    totalsBySeason: {
-      "2023": {
-        appearances: 36,
-        goals: 18,
-        assists: 5,
-        yellowCards: 4,
-        redCards: 1,
-        minutesPlayed: 3055,
-      },
-      "2024": {
-        appearances: 33,
-        goals: 22,
-        assists: 6,
-        yellowCards: 2,
-        redCards: 0,
-        minutesPlayed: 2814,
-      },
-      "2025": {
-        appearances: 29,
-        goals: 14,
-        assists: 4,
-        yellowCards: 5,
-        redCards: 0,
-        minutesPlayed: 2401,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:vinter",
-    playerName: "Elias Vinter",
-    clubName: "Redbridge Athletic",
-    position: "defender",
-    shirtNumber: 4,
-    seasons: ["2024", "2025"],
-    totalsBySeason: {
-      "2024": {
-        appearances: 30,
-        goals: 2,
-        assists: 1,
-        yellowCards: 6,
-        redCards: 1,
-        minutesPlayed: 2640,
-      },
-      "2025": {
-        appearances: 35,
-        goals: 3,
-        assists: 3,
-        yellowCards: 7,
-        redCards: 0,
-        minutesPlayed: 3122,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:ferreyra",
-    playerName: "Tomás Ferreyra",
-    clubName: "Kingsmoor Town",
-    position: "forward",
-    shirtNumber: 11,
-    seasons: ["2023", "2024", "2025", "2026"],
-    totalsBySeason: {
-      "2023": {
-        appearances: 24,
-        goals: 8,
-        assists: 9,
-        yellowCards: 1,
-        redCards: 0,
-        minutesPlayed: 1877,
-      },
-      "2024": {
-        appearances: 32,
-        goals: 12,
-        assists: 8,
-        yellowCards: 2,
-        redCards: 0,
-        minutesPlayed: 2604,
-      },
-      "2025": {
-        appearances: 36,
-        goals: 19,
-        assists: 10,
-        yellowCards: 3,
-        redCards: 0,
-        minutesPlayed: 3108,
-      },
-      "2026": {
-        appearances: 2,
-        goals: 2,
-        assists: 0,
-        yellowCards: 0,
-        redCards: 0,
-        minutesPlayed: 158,
-      },
-    },
-  },
-  {
-    playerId: "demo:player:ramanathan",
-    playerName: "Dev Ramanathan",
-    clubName: "Northgate United",
-    position: "goalkeeper",
-    shirtNumber: 1,
-    seasons: ["2025"],
-    totalsBySeason: {
-      "2025": {
-        appearances: 38,
-        goals: 0,
-        assists: 0,
-        yellowCards: 1,
-        redCards: 0,
-        minutesPlayed: 3420,
-      },
-    },
-  },
-] as const;
-
-const DEMO_OPPONENTS: readonly string[] = [
-  "Harbor City FC",
-  "Redbridge Athletic",
-  "Kingsmoor Town",
-  "Sable Rovers",
-  "Northgate United",
-  "Vale Wanderers",
-  "Eastfield Albion",
-] as const;
-
-function demoHashHex(seed: string): string {
-  let hex = "";
-  for (let round = 0; round < 4 && hex.length < 16; round += 1) {
-    hex += hashString(`${seed}:${round}`).toString(16).padStart(8, "0");
-  }
-  return hex.slice(0, 24);
-}
-
-function demoObservedAt(season: string): string {
-  return `2026-08-${String(10 + (Number.parseInt(season, 10) % 10)).padStart(2, "0")}T12:00:00.000Z`;
-}
-
-export class DemoFootballApiClient implements FootballApiClient {
-  async searchPlayers(
-    query: string,
-    season: string | null,
-  ): Promise<PlayerSearchResult> {
-    const needle = query.trim().toLowerCase();
-    const results: SearchHit[] = [];
-    for (const player of DEMO_PLAYERS) {
-      const haystack = `${player.playerName} ${player.clubName}`.toLowerCase();
-      if (!haystack.includes(needle)) continue;
-      const seasons =
-        season === null
-          ? player.seasons
-          : player.seasons.filter((entry) => entry === season);
-      if (seasons.length === 0) continue;
-      results.push({
-        playerId: player.playerId,
-        playerName: player.playerName,
-        clubName: player.clubName,
-        position: player.position,
-        seasons,
-      });
-    }
-    return { results, generatedAt: new Date().toISOString() };
-  }
-
-  async getPlayerSeasons(playerId: string): Promise<PlayerSeasonsResult> {
-    const player = this.requirePlayer(playerId);
-    return { seasons: [...player.seasons] };
-  }
-
-  async getPlayerMatches(
-    playerId: string,
-    season: string,
-  ): Promise<PlayerMatchesResult> {
-    const player = this.requirePlayer(playerId);
-    if (!player.seasons.includes(season)) {
-      return {
-        matches: [],
-        available: false,
-        reason: "Source data not available yet.",
-      };
-    }
-    const startYear = Number.parseInt(season, 10);
-    const matches: MatchRecord[] = [];
-    for (let index = 0; index < 10; index += 1) {
-      const random = mulberry32(hashString(`${playerId}:${season}:${index}`));
-      const venueRoll = random();
-      const venue: "home" | "away" = venueRoll < 0.5 ? "home" : "away";
-      const opponentPool = DEMO_OPPONENTS.filter(
-        (club) => club !== player.clubName,
-      );
-      const opponent =
-        opponentPool[
-          hashString(`${playerId}:${index}`) % opponentPool.length
-        ] ?? "Vale Wanderers";
-      const generatedTeamGoals = Math.floor(random() * 4);
-      const againstGoals = Math.floor(random() * 3);
-      const goalChance = random();
-      const goals =
-        goalChance < 0.3
-          ? 1
-          : goalChance < 0.42
-            ? 2
-            : goalChance < 0.46
-              ? 3
-              : 0;
-      const forGoals = Math.max(generatedTeamGoals, goals);
-      const assists = random() < 0.25 ? 1 : 0;
-      const played = random() < 0.85;
-      const day = 3 + index * 21 + Math.floor(random() * 10);
-      const month = ((day - 1) % 12) + 1;
-      matches.push({
-        matchId: `demo-match-${season}-${index}`,
-        date: new Date(
-          Date.UTC(startYear, month - 1, ((day - 1) % 27) + 1, 15, 0),
-        ).toISOString(),
-        opponent,
-        venue,
-        scoreFor: forGoals,
-        scoreAgainst: againstGoals,
-        goals: played || goals > 0 ? goals : null,
-        assists: played || assists > 0 ? assists : null,
-        minutes: played ? 45 + Math.floor(random() * 46) : null,
-      });
-    }
-    return { matches, available: true, reason: null };
-  }
-
-  async getCard(playerId: string, season: string): Promise<CardRecord | null> {
-    const player = DEMO_PLAYERS.find((entry) => entry.playerId === playerId);
-    if (player === undefined || !player.seasons.includes(season)) return null;
-    return this.cardFor(player, season, "demo");
-  }
-
-  async generateCard(request: GenerateRequest): Promise<GenerateOutcome> {
-    const player = this.requirePlayer(request.playerId);
-    if (!player.seasons.includes(request.season)) {
-      throw new DataClientError(
-        "The demo dataset has no verified data for that season",
-        404,
-      );
-    }
-    return {
-      kind: "card",
-      card: this.cardFor(player, request.season, request.mode),
-    };
-  }
-
-  async getScrapeRun(runId: string): Promise<ScrapeSnapshot> {
-    if (!runId.startsWith("demo-run-")) {
-      throw new DataClientError("Unknown demo scrape run", 404);
-    }
-    return {
-      runId,
-      status: "completed",
-      progress: "completed",
-      detail: null,
-      card: null,
-    };
-  }
-
-  async getRuntime(): Promise<RuntimeStatus> {
-    return {
-      schemaVersion: 1,
-      service: "cardpulse-api",
-      domain: "football",
-      mode: "mock",
-      sourceId: "demo-local-snapshot",
-      collectorConfigured: false,
-      targetConfigured: false,
-      liveMutationsEnabled: false,
-      configurationIssues: [
-        "Browser-side demo dataset selected; no provider requests are made.",
-      ],
-    } as RuntimeStatus;
-  }
-
-  async getSourceHealth(sourceId: string): Promise<SourceHealthSummary | null> {
-    if (sourceId !== "demo-local-snapshot") return null;
-    return {
-      state: "healthy",
-      lastSuccessfulAt: demoObservedAt("2026"),
-      activeIncidentReason: null,
-      healingState: null,
-    };
-  }
-
-  private requirePlayer(playerId: string): DemoPlayer {
-    const player = DEMO_PLAYERS.find((entry) => entry.playerId === playerId);
-    if (player === undefined) {
-      throw new DataClientError("Unknown demo player", 404);
-    }
-    return player;
-  }
-
-  private cardFor(
-    player: DemoPlayer,
-    season: string,
-    mode: "live" | "demo",
-  ): CardRecord {
-    const totals = player.totalsBySeason[season];
-    if (totals === undefined) {
-      throw new DataClientError("Demo season missing totals", 404);
-    }
-    return {
-      playerId: player.playerId,
-      playerName: player.playerName,
-      position: player.position,
-      shirtNumber: player.shirtNumber,
-      clubName: player.clubName,
-      season,
-      mode,
-      totals: { ...totals },
-      sourceUrl: `https://demo.cardpulse.local/snapshots/epl-${season}`,
-      sourceId: "demo-local-snapshot",
-      observedAt: demoObservedAt(season),
-      snapshotVersion: player.seasons.indexOf(season) + 1,
-      snapshotHash: demoHashHex(`${player.playerId}:${season}`),
-      collectorId: "demo_collector_local_9f3c",
-      scrapeRunId: `demo-run-${hashString(`${player.playerId}:${season}`)}`,
-      scrapeStatus: "completed",
-      fetchedAt: new Date().toISOString(),
-      cacheAgeSeconds: 0,
-    };
   }
 }

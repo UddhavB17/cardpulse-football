@@ -436,7 +436,7 @@ export function createRequestHandler(
         }
         if (activeRuntime.mode !== "live") {
           throw new ConflictError(
-            "Live card generation is unavailable in explicit mock mode; use the clearly labelled browser demo action instead",
+            "Live card generation is unavailable while the API is in mock mode; configure the live provider before using operator controls",
           );
         }
         requireLiveMutationAuthorization();
@@ -452,7 +452,7 @@ export function createRequestHandler(
         }
         if (requestObject.mode !== undefined && requestObject.mode !== "live") {
           throw new BadRequestError(
-            "The HTTP generation route accepts live mode only; demo data is an explicit browser-side action",
+            "The HTTP generation route accepts live mode only",
           );
         }
         const parsed = GenerateRequestSchema.safeParse({

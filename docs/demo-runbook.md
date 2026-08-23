@@ -43,12 +43,10 @@ branch.
 
 Open `http://127.0.0.1:4173`.
 
-For a zero-cost rehearsal, choose **Use demo data** first, search Haaland, and
-generate the clearly stamped demo card; it never contacts Bright Data. For an
-approved live rehearsal, open **Live operator setup**, enter the token (tab
-memory only), select the registry season, and explicitly refresh the local
-index once before beginning the timed path. That refresh is billable; never
-run it without account-holder approval.
+Open **Live operator controls**, enter the token (tab memory only), select the
+registry season, and explicitly scrape the live player index once before the
+timed path. The browser has no offline player catalog. The refresh is billable;
+never run it without account-holder approval.
 
 | Time      | Action                                                      | What to say                                                                                                                                             |
 | --------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -56,9 +54,9 @@ run it without account-holder approval.
 | 0:15–0:30 | Pick a verified season, press generate                      | “Only registry seasons are offered. Generate either serves a validated snapshot from cache or starts one real Bright Data collection — and says which.” |
 | 0:30–0:45 | Watch run status → card                                     | “Stages are reported truthfully end to end; if any stage failed you would see exactly that stage, not a fake success.”                                  |
 | 0:45–1:05 | Flip the card, generate a second season                     | “The back is validated match and goal history. Explicit flip works by keyboard and touch; each season keeps separate provenance.”                       |
-| 1:05–1:25 | Switch chaos source to `drift-cards`, regenerate against it | “Layout drift is quarantined. The last verified card stays on screen; failure never becomes demo data.”                                                 |
+| 1:05–1:25 | Switch chaos source to `drift-cards`, regenerate against it | “Layout drift is quarantined. The last verified card stays on screen; failed output never replaces verified data.”                                      |
 | 1:25–1:50 | Fetch repair preview → validate → approve                   | “Same collector ID refactored, preview gated on schema and counts, human approval required, then rerun to recovery evidence.”                           |
-| 1:50–2:00 | Point at `DEMO DATA` / provenance labels                    | “Demo data needs an explicit action and keeps its label forever. That honesty is the product.”                                                          |
+| 1:50–2:00 | Open the provenance drawer                                  | “Every live card records its source, observed time, snapshot hash, and scrape run.”                                                                     |
 
 Failure messaging to show deliberately (optional, 30 s):
 

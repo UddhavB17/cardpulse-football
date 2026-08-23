@@ -151,10 +151,10 @@ route is local demo tooling and must not be exposed publicly.
 Consumes the typed API and renders the searchable card experience: ARIA
 combobox player search, verified-season picker, front/back cards with explicit
 flip, season comparison, run-status display, team summaries, standings,
-provenance, quarantine, healing state, and recovery evidence. The UI labels
-mock/live/demo truth explicitly — demo output keeps a persistent
-`DEMO DATA` label — honors `prefers-reduced-motion`, and works by keyboard and
-touch without photos, logos, or shot coordinates.
+provenance, quarantine, healing state, and recovery evidence. The browser UI is
+live-operator only, refuses demo-marked card payloads, honors
+`prefers-reduced-motion`, and works by keyboard and touch without photos, logos,
+or shot coordinates.
 
 ## Frozen contracts
 
@@ -162,7 +162,7 @@ Search results, season entries, generation runs, scrape status stages, and
 generated cards all cross strict Zod schemas in `packages/contracts`. Unknown
 fields fail closed, stage names are a closed vocabulary, and cached versus
 freshly collected provenance is part of the contract — so UI code cannot blur
-the line between a live collection, a cache hit, or demo data.
+the line between a live collection and a cache hit.
 
 ## Security and MVP limits
 

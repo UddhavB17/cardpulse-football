@@ -29,7 +29,7 @@ export interface CardPayloadLike {
   shirtNumber: number | null;
   clubName: string;
   season: string;
-  mode: "live" | "demo";
+  mode: "live";
   totals: StatTotals;
   sourceUrl: string | null;
   sourceId: string | null;
@@ -164,7 +164,6 @@ export function buildCardFront(payload: CardPayloadLike): CardFrontView {
     totals: payload.totals,
     attributes: toAttributes(payload.totals),
     verifiedAtLabel: payload.observedAt,
-    isDemo: payload.mode === "demo",
     seasonInProgress: isInProgressSeason(
       (/^\d{4}$/.test(seasonKey) ? seasonKey : "2025") as SeasonKey,
     ),
@@ -307,7 +306,6 @@ export function buildProvenanceView(options: {
       (sourceHealth?.activeIncidentReason != null
         ? `incident: ${sourceHealth.activeIncidentReason}`
         : "no healing events"),
-    isDemo: payload.mode === "demo",
   };
 }
 
