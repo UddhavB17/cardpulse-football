@@ -996,6 +996,14 @@ h1 {
   color: var(--ink);
 }
 
+.athlete-svg.archetype-svg {
+  inset: 0;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  height: 100%;
+}
+
 .crest-svg {
   position: absolute;
   top: 8px;
@@ -1060,6 +1068,36 @@ h1 {
   font-size: clamp(19px, 4.6vw, 25px);
   line-height: 1.02;
   text-transform: uppercase;
+}
+
+.archetype-title {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--accent-red-deep);
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.archetype-title::before {
+  display: inline-block;
+  width: 12px;
+  height: 7px;
+  margin-right: 7px;
+  background: var(--accent-red);
+  transform: skewX(-18deg);
+  content: "";
+}
+
+.archetype-special,
+[data-archetype="special"] .archetype-title {
+  color: var(--gold);
+}
+
+.archetype-special::before,
+[data-archetype="special"] .archetype-title::before {
+  background: var(--gold);
 }
 
 .player-meta {

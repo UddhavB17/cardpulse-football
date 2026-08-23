@@ -56,7 +56,7 @@ import type {
   SeasonKey,
 } from "./football/types";
 import {
-  athleteSvg,
+  athleteArtworkPlan,
   boltIcon,
   checkIcon,
   crestSvg,
@@ -506,6 +506,12 @@ function renderCardStage(): void {
 
   const front = card.front;
   const back = card.back;
+  const art = athleteArtworkPlan({
+    playerId: front.playerId,
+    playerName: front.playerName,
+    position: front.sourcePosition,
+    uniqueKey: front.seasonLabel,
+  });
   const progressBadge = front.seasonInProgress
     ? `<span class="progress-badge">Season in progress</span>`
     : "";
@@ -528,6 +534,7 @@ function renderCardStage(): void {
   stage.innerHTML = `
   <article class="flip-card${state.flipped ? " flipped" : ""}" id="flip-card"
     tabindex="0" role="button" aria-roledescription="collectible card"
+    data-archetype="${escapeHtml(front.archetypeSpecial ? "special" : front.archetypeId)}"
     aria-label="${escapeHtml(cardAriaLabel)}"
     style="${paletteStyle(front.palette)}">
     <div class="card-inner3d">
@@ -538,12 +545,13 @@ function renderCardStage(): void {
         </header>
         <div class="card-art">
           ${crestSvg({ initials: escapeHtml(front.clubCode), halftoneId: `ht-front-${front.playerId.replace(/[^a-z0-9]/gi, "")}` })}
-          ${athleteSvg({ halftoneId: "ht-athlete" })}
+          ${art.svg}
           <span class="card-number" aria-hidden="true">${front.shirtNumber ?? "—"}</span>
           ${progressBadge}
         </div>
         <div class="card-body">
           <h3 class="player-name chromatic">${escapeHtml(front.playerName)}</h3>
+          <p class="archetype-title${front.archetypeSpecial ? " archetype-special" : ""}">${escapeHtml(front.archetypeTitle)}</p>
           <p class="player-meta">
             <span class="position-tag">${escapeHtml(front.positionDisplay)}</span>
             <span>${escapeHtml(front.clubName)}</span>

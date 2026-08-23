@@ -15,6 +15,7 @@ import type {
   StatTotals,
   TimelineEntryView,
 } from "./types";
+import { resolveArchetype } from "./archetypes";
 import { isInProgressSeason, seasonLabel } from "./seasons";
 import { hashString, redactCollectorId, serialNumberFrom, clamp } from "./util";
 
@@ -147,14 +148,25 @@ function toAttributes(totals: StatTotals): AttributeLine[] {
   return lines;
 }
 
+const SPECIAL_ARCHETYPES = new Set(["nordic-no-9", "midfield-architect"]);
+
 export function buildCardFront(payload: CardPayloadLike): CardFrontView {
   const seasonKey = payload.season;
+  const archetype = resolveArchetype({
+    playerId: payload.playerId,
+    playerName: payload.playerName,
+    position: payload.position,
+  });
   return {
     playerId: payload.playerId,
     playerName: payload.playerName,
     clubName: payload.clubName,
     clubCode: clubCodeFrom(payload.clubName),
     positionDisplay: positionDisplay(payload.position),
+    sourcePosition: payload.position,
+    archetypeId: archetype.id,
+    archetypeTitle: archetype.editorialTitle,
+    archetypeSpecial: SPECIAL_ARCHETYPES.has(archetype.id),
     shirtNumber: payload.shirtNumber,
     seasonLabel: seasonLabel(
       (/^\d{4}$/.test(seasonKey) ? seasonKey : "2025") as SeasonKey,

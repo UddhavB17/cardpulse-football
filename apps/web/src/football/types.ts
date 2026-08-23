@@ -56,6 +56,8 @@ export interface CardFrontView {
   clubName: string;
   clubCode: string;
   positionDisplay: string;
+  /** Raw source position used for archetype resolution. */
+  sourcePosition: string | null;
   shirtNumber: number | null;
   seasonLabel: string;
   serialNumber: string;
@@ -64,6 +66,10 @@ export interface CardFrontView {
   attributes: AttributeLine[];
   verifiedAtLabel: string | null;
   seasonInProgress: boolean;
+  archetypeId: string;
+  archetypeTitle: string;
+  /** Curated player editions use the gold special tier. */
+  archetypeSpecial: boolean;
 }
 
 export interface MatchView {
