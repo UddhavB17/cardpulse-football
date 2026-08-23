@@ -14,7 +14,7 @@ Render dashboard.
 - Runtime: `Node`
 - Branch: `player-search-experience`
 - Root directory: blank
-- Build command: `corepack enable && pnpm install --frozen-lockfile`
+- Build command: `pnpm install --frozen-lockfile`
 - Start command: `pnpm --filter @bidsentinel/collector-worker start`
 - Health check path: `/health`
 
@@ -41,7 +41,7 @@ malformed values.
 - Runtime: `Static Site`
 - Branch: `player-search-experience`
 - Root directory: blank
-- Build command: `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @bidsentinel/web build`
+- Build command: `pnpm install --frozen-lockfile && pnpm --filter @bidsentinel/web build`
 - Publish directory: `apps/web/dist`
 - Environment: `VITE_API_BASE_URL=https://<your-api>.onrender.com`
 
