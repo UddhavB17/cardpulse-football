@@ -75,14 +75,19 @@ CardPulse Football.
 
 ## Hackathon submission artifacts
 
-- [Example structured player output](examples/structured-output.json)
+- [Example StatBunker-shaped collector output](examples/structured-output.json)
+  (illustrative shape; not captured from a live run)
+- [StatBunker collector spec and Scraper Studio prompts](scrapers/statbunker/README.md)
+- [Terminal-first StatBunker live runbook](docs/statbunker-live-runbook.md)
 - [One-minute demo runbook](docs/demo-runbook.md)
 - [Live Scraper Studio evidence checklist](evidence/README.md)
+- [Redacted real first-run failure evidence](evidence/live/statbunker-first-run-failure.redacted.json)
 - Public repository: <https://github.com/UddhavB17/cardpulse-football>
 
-The demo video URL and redacted live `c_*` evidence must be added before the
-submission form is filed. They are intentionally not represented as complete
-until those artifacts exist.
+The demo video URL and redacted **successful** live `c_*` evidence must be added
+before the submission form is filed. The repository currently contains honest
+evidence of a real failed run and same-ID heal attempt; it is intentionally not
+represented as a successful live integration.
 
 ## Run locally
 
@@ -154,6 +159,17 @@ Its football record model is inspired by
 under the [Open Database License (ODbL)](https://www.openligadb.de/lizenz).
 CardPulse does not redistribute third-party player photos, club crests, league
 marks, or an OpenLigaDB data dump.
+
+[StatBunker](https://www.statbunker.com/) is a public HTML statistics site
+targeted by the collector spec in
+[`scrapers/statbunker/`](scrapers/statbunker/README.md). Public reachability
+is a technical fact, not a license: its terms must be checked before any live
+run, robots-friendly pages still deserve a low request rate (one manual
+collector run at a time, no schedules), and any 403 or 429 means stop. The
+spec collects only public statistical fields — never images, crests, player
+photos, or account/login pages. No StatBunker data is redistributed through
+this repository; the local fixtures remain fictional,
+OpenLigaDB-inspired demo data only.
 
 Before adding another real source, verify its terms, robots policy, rate limits,
 and redistribution rights. Keep source adapters isolated so one site's layout
