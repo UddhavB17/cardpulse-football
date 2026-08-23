@@ -1,118 +1,121 @@
-// CardPulse Football domain model.
+// CardPulse Football — search/card domain views.
 //
-// These types are intentionally structural rather than imported from the
-// backend contracts package. Only `src/data-client.ts` may know about
-// `@bidsentinel/contracts`; this layer survives backend renames as long as
-// runtime payloads keep their shape.
+// These types describe what the UI renders. They are intentionally structural:
+// only `src/data-client.ts` talks HTTP, and `src/football/mapping.ts` turns
+// normalized payloads into these views.
 
-export type DataModeLabel = "DEMO DATA" | "LIVE PROVIDER";
+export type DataMode = "live";
 
-export type ModeChip = "MOCK PIPELINE" | "LOCAL API" | "LIVE PROVIDER";
+export interface PaletteView {
+  /** Team-inspired decorative hues, deterministic per club name. */
+  primary: string;
+  secondary: string;
+  accent: string;
+}
 
-/** Contract positions, mirrored structurally. */
-export type ContractPosition =
-  "goalkeeper" | "defender" | "midfielder" | "forward";
+export interface SearchHitView {
+  playerId: string;
+  playerName: string;
+  clubName: string;
+  positionDisplay: string;
+  seasons: string[];
+}
 
-export type FormMark = "W" | "D" | "L";
+export type ResultState =
+  "idle" | "too-short" | "loading" | "source-unavailable" | "empty" | "results";
+
+export type SeasonKey = "2023" | "2024" | "2025" | "2026";
+
+export interface SeasonOptionView {
+  key: SeasonKey;
+  label: string;
+  available: boolean;
+  inProgress: boolean;
+}
 
 export interface AttributeLine {
   label: string;
-  /** Real stat value from the verified record. */
   value: number;
   /** Bar width percentage, precomputed by the mapping layer. */
   pct: number;
 }
 
-export interface CardProvenance {
-  sourceId: string;
-  entityId: string;
-  snapshotId: string;
-  snapshotVersion: number;
-  verifiedAt: string | null;
-  signature: string;
-  collectorIdRedacted: string;
+/** Season totals for the card face; null means the source did not publish it. */
+export interface StatTotals {
+  appearances: number | null;
+  goals: number | null;
+  assists: number | null;
+  minutesPlayed: number | null;
+  yellowCards: number | null;
+  redCards: number | null;
 }
 
-export interface PlayerCardView {
-  id: string;
+export interface CardFrontView {
+  playerId: string;
   playerName: string;
-  position: ContractPosition;
+  clubName: string;
+  clubCode: string;
   positionDisplay: string;
   shirtNumber: number | null;
-  nationality: string | null;
-  clubName: string;
-  clubCode: string;
-  serialNumber: string;
   seasonLabel: string;
+  serialNumber: string;
+  palette: PaletteView;
+  totals: StatTotals;
   attributes: AttributeLine[];
-  form: FormMark[];
-  provenance: CardProvenance;
+  verifiedAtLabel: string | null;
+  seasonInProgress: boolean;
 }
 
-export type ClubHealthState =
-  "healthy" | "degraded" | "quarantined" | "recovering";
-
-export interface ClubIntegrityView {
-  sourceId: string;
-  clubName: string;
-  clubCode: string;
-  state: ClubHealthState;
-  checkedAt: string | null;
-  lastSuccessfulAt: string | null;
-  consecutiveFailures: number;
-  recentFailureRate: number;
-  incidentReason: string | null;
-  incidentDetail: string | null;
-  recoveryActions: string[];
+export interface MatchView {
+  matchId: string | null;
+  dateLabel: string;
+  opponent: string;
+  venue: "Home" | "Away";
+  scoreLabel: string | null;
+  goals: number | null;
+  assists: number | null;
+  minutes: number | null;
 }
 
-export interface TeamCardView {
-  teamId: string;
-  name: string;
-  shortName: string | null;
-  city: string | null;
-  stadium: string | null;
-  coach: string | null;
-  founded: number | null;
-  snapshotVersion: number;
-  observedAt: string | null;
-  state: ClubHealthState | null;
-}
-
-export interface StandingRowView {
-  /** Stable ordering key (provider team id or simulated club code). */
-  key: string;
-  clubName: string;
-  played: number;
-  won: number;
-  drawn: number;
-  lost: number;
-  goalsFor: number;
-  goalsAgainst: number;
-  goalDiff: number;
-  points: number;
-  rank: number | null;
-  isHeroClub: boolean;
-}
-
-export interface TimelineEntry {
-  time: string | null;
+export interface TimelineEntryView {
   title: string;
   detail: string;
-  tone: "good" | "warn" | "bad" | "info";
+  tone: "good" | "info" | "warn" | "bad";
 }
 
-export interface ReliabilityView {
-  modeChip: ModeChip;
-  dataLabel: DataModeLabel;
-  ready: boolean;
-  issues: string[];
-  collectorIdRedacted: string;
-  jobsTriggered: number;
-  evidenceCount: number;
-  quarantineCount: number;
-  amendmentCount: number;
-  stale: boolean;
-  receivedAt: string | null;
-  liveMutationsEnabled: boolean;
+export interface CardBackView {
+  headlineMatch: MatchView | null;
+  timeline: TimelineEntryView[];
+  note: string | null;
+}
+
+export interface ProvenanceView {
+  sourceUrl: string | null;
+  observedAtLabel: string | null;
+  snapshotVersionLabel: string;
+  snapshotHashShort: string;
+  collectorRedacted: string;
+  scrapeRunLabel: string;
+  scrapeStatusLabel: string;
+  cacheLabel: string;
+  sourceHealthLabel: string;
+  healingLabel: string;
+}
+
+export interface CardBundle {
+  front: CardFrontView;
+  back: CardBackView;
+  provenance: ProvenanceView;
+  seasonKey: SeasonKey;
+  mode: DataMode;
+}
+
+export type CompareDirection = "up" | "down" | "flat" | "unknown";
+
+export interface CompareDeltaView {
+  metric: string;
+  currentLabel: string;
+  previousLabel: string;
+  deltaLabel: string;
+  direction: CompareDirection;
 }

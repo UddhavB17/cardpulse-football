@@ -1,22 +1,39 @@
 services:
   - type: web
-    name: bidsentinel-backend
+    name: cardpulse-football-api
     runtime: node
-    buildCommand: pnpm install && pnpm --filter @bidsentinel/collector-worker... build
+    plan: free
+    branch: main
+    buildCommand: pnpm install --frozen-lockfile
     startCommand: pnpm --filter @bidsentinel/collector-worker start
+    healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: "4321"
       - key: HOST
         value: 0.0.0.0
-      - key: NODE_ENV
-        value: production
+      - key: CARDPULSE_ALLOWED_ORIGINS
+        value: https://cardpulse-football-web.onrender.com
       - key: CARDPULSE_SOURCE_ID
-        value: openligadb
-      # Live mode environment variables (configure these in Render dashboard if executing live collection cycles)
-      # - key: BRIGHT_DATA_API_TOKEN
-      #   value: your-api-token
-      # - key: BRIGHT_DATA_COLLECTOR_ID
-      #   value: your-collector-id
-      # - key: BRIGHT_DATA_TARGET_URL
-      #   value: your-target-url
+        value: statbunker-premier-league
+      - key: CARDPULSE_SOURCE_PROFILE
+        value: statbunker
+      - key: CARDPULSE_ENABLE_LIVE_MUTATIONS
+        value: "true"
+      - key: BRIGHT_DATA_TARGET_URL
+        value: https://www.statbunker.com/competitions/PlayerStandings?comp_id=791
+      - key: BRIGHT_DATA_API_TOKEN
+        sync: false
+      - key: BRIGHT_DATA_COLLECTOR_ID
+        sync: false
+      - key: CARDPULSE_OPERATOR_TOKEN
+        sync: false
+
+  - type: web
+    name: cardpulse-football-web
+    runtime: static
+    plan: free
+    branch: main
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @bidsentinel/web build
+    staticPublishPath: ./apps/web/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://cardpulse-football-api.onrender.com

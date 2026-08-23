@@ -2,20 +2,93 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CardPulsePipeline } from "./pipeline.js";
-import { MockBrightDataHealingProvider } from "@bidsentinel/brightdata";
+import {
+  MockBrightDataHealingProvider,
+  STATBUNKER_SOURCE_ID,
+  StatBunkerRowMapper,
+  statBunkerPlayerSearchResolverUrl,
+  type FootballCollectionRequest,
+} from "@bidsentinel/brightdata";
 import {
   trackedPlayerId,
   validPlayerFixture,
 } from "@bidsentinel/contracts/fixtures";
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { createRequestHandler } from "./server.js";
+import {
+  createRequestHandler,
+  resolveAllowedOrigins,
+  resolveServerHost,
+  resolveServerPort,
+  type RequestHandlerOptions,
+} from "./server.js";
 import { createRuntimeFromEnv, type CardPulseRuntime } from "./runtime.js";
 
 const SOURCE_ID = "openligadb";
+const OPERATOR_TOKEN = "operator-token-with-at-least-32-chars";
+const HAALAND_ID = `${STATBUNKER_SOURCE_ID}:60023`;
 
-async function startRuntimeServer(runtime: CardPulseRuntime) {
+function statBunkerHaalandRow(): Record<string, unknown> {
+  return {
+    player_name: "Erling Haaland",
+    player_url:
+      "https://www.statbunker.com/players/getPlayerStats?player_id=60023",
+    team_name: "Manchester City",
+    position: "Forward",
+    appearances: 28,
+    goals: 19,
+    assists: 6,
+    yellow_cards: 2,
+    second_yellow_cards: 0,
+    red_cards: 0,
+    minutes_played: 2380,
+    nationality: "Norway",
+    season: "2025",
+    source_url:
+      "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+  };
+}
+
+function statBunkerHaalandMatchRow(): Record<string, unknown> {
+  return {
+    competition: "Premier League 25/26",
+    home_team: "Liverpool",
+    away_team: "Manchester City",
+    score: "1 - 2",
+    started: 1,
+    substitute: 0,
+    minutes_played: 90,
+    goals: 1,
+    assists: 1,
+    yellow_cards: 1,
+    second_yellow_cards: 0,
+    red_cards: 0,
+    played_on: "08 Feb 2026",
+  };
+}
+
+function resolvedStatBunkerHaalandMatchRow(): Record<string, unknown> {
+  return {
+    ...statBunkerHaalandMatchRow(),
+    resolved_player_name: "Erling Haaland",
+    resolved_player_id: "60023",
+    resolved_player_url:
+      "https://www.statbunker.com/players/getPlayerStats?player_id=60023",
+    source_url:
+      "https://www.statbunker.com/players/SeasonMatches?comps_id=776&comps_type=EPL&player_id=60023",
+  };
+}
+
+async function startRuntimeServer(
+  runtime: CardPulseRuntime,
+  options: RequestHandlerOptions = {},
+) {
   const server = createServer(
-    createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
+    createRequestHandler(
+      runtime.pipeline,
+      runtime.coordinator,
+      runtime,
+      options,
+    ),
   );
   const baseUrl = await new Promise<string>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -29,6 +102,22 @@ async function startRuntimeServer(runtime: CardPulseRuntime) {
 async function stopRuntimeServer(server: ReturnType<typeof createServer>) {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
+
+describe("deployment configuration", () => {
+  it("preserves local binding defaults and accepts Render values", () => {
+    expect(resolveServerHost(undefined)).toBe("127.0.0.1");
+    expect(resolveServerHost(" 0.0.0.0 ")).toBe("0.0.0.0");
+    expect(resolveServerPort(undefined)).toBe(4321);
+    expect(resolveServerPort("10000")).toBe(10000);
+  });
+
+  it("fails fast for an invalid deployment origin or port", () => {
+    expect(() => resolveAllowedOrigins("https://example.com/path")).toThrow(
+      /origins without paths/,
+    );
+    expect(() => resolveServerPort("invalid")).toThrow(/PORT/);
+  });
+});
 
 describe("CardPulse Football API Server", () => {
   let server: ReturnType<typeof createServer>;
@@ -58,7 +147,11 @@ describe("CardPulse Football API Server", () => {
       liveMutationsEnabled: false,
       operatorTokenHash: null,
     };
-    const handler = createRequestHandler(pipeline, coordinator, runtime);
+    const handler = createRequestHandler(pipeline, coordinator, runtime, {
+      allowedOrigins: resolveAllowedOrigins(
+        "https://cardpulse-football-web.onrender.com",
+      ),
+    });
     server = createServer(handler);
 
     await new Promise<void>((resolve) => {
@@ -84,6 +177,21 @@ describe("CardPulse Football API Server", () => {
     };
     expect(body.data.service).toBe("cardpulse-api");
     expect(body.data.status).toBe("ok");
+  });
+
+  it("allows the configured production web origin and rejects other origins", async () => {
+    const allowed = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://cardpulse-football-web.onrender.com" },
+    });
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(
+      "https://cardpulse-football-web.onrender.com",
+    );
+    expect(allowed.headers.get("vary")).toContain("Origin");
+
+    const rejected = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://untrusted.example" },
+    });
+    expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   it("GET /api/runtime explicitly labels deterministic mock mode", async () => {
@@ -128,7 +236,7 @@ describe("CardPulse Football API Server", () => {
     };
     expect(body.success).toBe(true);
     expect(body.outcomes.every((outcome) => outcome === "accepted")).toBe(true);
-    expect(body.collectorId).toBe("c_mock_cardpulse");
+    expect(body.collectorId).toBe("[redacted]");
 
     const listRes = await fetch(`${baseUrl}/api/players`);
     const listBody = (await listRes.json()) as {
@@ -289,7 +397,7 @@ describe("CardPulse Football API Server", () => {
       };
     };
     expect(healingBody.data.state).toBe("recovered");
-    expect(healingBody.data.incident.collectorId).toBe("c_mock_cardpulse");
+    expect(healingBody.data.incident.collectorId).toBe("[redacted]");
     expect(healingBody.data.incident.evidence?.outcome).toBe("recovered");
 
     const sRes = await fetch(`${baseUrl}/api/sources`);
@@ -420,6 +528,652 @@ describe("CardPulse live mutation authorization", () => {
       });
       expect(allowed.status).toBe(200);
       expect(collect).toHaveBeenCalledTimes(1);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+});
+
+describe("searchable player-card HTTP flow", () => {
+  function liveStatBunkerRuntime(): CardPulseRuntime {
+    return createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "bright-data-token",
+      BRIGHT_DATA_COLLECTOR_ID: "c_exact",
+      BRIGHT_DATA_TARGET_URL:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      CARDPULSE_SOURCE_ID: STATBUNKER_SOURCE_ID,
+      CARDPULSE_SOURCE_PROFILE: "statbunker",
+      CARDPULSE_ENABLE_LIVE_MUTATIONS: "true",
+      CARDPULSE_OPERATOR_TOKEN: OPERATOR_TOKEN,
+    });
+  }
+
+  it("resolves an actual list-only search hit through one exact-name generation run", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = request.targetUrl.includes("PlayerStandings")
+          ? [statBunkerHaalandRow()]
+          : [resolvedStatBunkerHaalandMatchRow()];
+        if (request.targetUrl.includes("PlayerStandings")) {
+          (rawRows[0] as Record<string, unknown>).player_url = null;
+        }
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-resolver-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const refreshed = await fetch(`${baseUrl}/api/player-index/refresh`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ season: "2025" }),
+      });
+      expect(refreshed.status).toBe(200);
+
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      );
+      const searchBody = (await search.json()) as {
+        data: Array<{ playerId: string }>;
+      };
+      const fallbackPlayerId = searchBody.data[0]?.playerId;
+      expect(fallbackPlayerId).toBe(
+        `${STATBUNKER_SOURCE_ID}:erling-haaland-manchester-city`,
+      );
+
+      const generated = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
+        },
+        body: JSON.stringify({ playerId: fallbackPlayerId, season: "2025" }),
+      });
+      expect(generated.status).toBe(202);
+      const acknowledgement = (await generated.json()) as {
+        data: { runId: string };
+      };
+
+      type ResolverTerminal = {
+        data: {
+          status: string;
+          card: null | { provenance: { sourceUrl: string } };
+        };
+      };
+      let terminal: ResolverTerminal | null = null;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const response = await fetch(
+          `${baseUrl}/api/scrapes/${acknowledgement.data.runId}`,
+        );
+        terminal = (await response.json()) as ResolverTerminal;
+        if (terminal?.data.status === "succeeded") break;
+      }
+      expect(terminal).toMatchObject({
+        data: {
+          status: "succeeded",
+          card: {
+            provenance: {
+              sourceUrl:
+                "https://www.statbunker.com/players/SeasonMatches?comps_id=776&comps_type=EPL&player_id=60023",
+            },
+          },
+        },
+      });
+      expect(collect).toHaveBeenCalledTimes(2);
+      expect(collect.mock.calls[1]?.[0].targetUrl).toBe(
+        statBunkerPlayerSearchResolverUrl(776, "Erling Haaland"),
+      );
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("returns only seasons an indexed player actually holds", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = [statBunkerHaalandRow()];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      await fetch(`${baseUrl}/api/player-index/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ season: "2025" }),
+      });
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      );
+      const searchBody = (await search.json()) as {
+        data: Array<{ playerId: string }>;
+      };
+      const playerId = searchBody.data[0]?.playerId;
+      expect(playerId).toBeTruthy();
+
+      const seasons = await fetch(
+        `${baseUrl}/api/players/${encodeURIComponent(playerId!)}/seasons`,
+      );
+      expect(seasons.status).toBe(200);
+      const seasonsBody = (await seasons.json()) as { data: string[] };
+      expect(seasonsBody.data).toEqual(["2025"]);
+      expect(seasonsBody.data).not.toContain("2023");
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("auto-prepares club search, generates without browser credentials, then serves a cache hit", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = request.targetUrl.includes("/players/SeasonMatches")
+          ? [statBunkerHaalandMatchRow()]
+          : [statBunkerHaalandRow()];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const clubSearch = await fetch(
+        `${baseUrl}/api/search/players?q=manchester+players&season=2025`,
+      );
+      const clubSearchBody = (await clubSearch.json()) as {
+        data: Array<{ playerId: string; playerName: string }>;
+      };
+      expect(clubSearchBody.data).toEqual([
+        expect.objectContaining({
+          playerId: HAALAND_ID,
+          playerName: "Erling Haaland",
+        }),
+      ]);
+      expect(collect).toHaveBeenCalledTimes(1);
+
+      const prepared = await fetch(`${baseUrl}/api/player-index/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ season: "2025" }),
+      });
+      expect(prepared.status).toBe(200);
+      expect(collect).toHaveBeenCalledTimes(1);
+      expect(collect.mock.calls[0]?.[0]).toMatchObject({
+        targetUrl:
+          "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      });
+
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=HAALAND&season=2025`,
+      );
+      const searchBody = (await search.json()) as {
+        data: Array<{ playerId: string; playerName: string }>;
+      };
+      expect(searchBody.data).toEqual([
+        expect.objectContaining({
+          playerId: HAALAND_ID,
+          playerName: "Erling Haaland",
+        }),
+      ]);
+
+      const generated = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          playerId: HAALAND_ID,
+          season: "2025",
+          mode: "live",
+        }),
+      });
+      expect(generated.status).toBe(202);
+      const acknowledgement = (await generated.json()) as {
+        data: { runId: string };
+      };
+      type TerminalResponse = {
+        data: {
+          status: string;
+          card: null | {
+            playerName: string;
+            provenance: { collectorId: string };
+          };
+        };
+      };
+      let terminal: TerminalResponse | null = null;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const polled = await fetch(
+          `${baseUrl}/api/scrapes/${acknowledgement.data.runId}`,
+        );
+        terminal = (await polled.json()) as TerminalResponse;
+        if (terminal?.data.status === "succeeded") break;
+      }
+      expect(terminal).not.toBeNull();
+      if (terminal === null) throw new Error("expected a terminal response");
+      expect(terminal.data.card?.playerName).toBe("Erling Haaland");
+      expect(terminal.data.card?.provenance.collectorId).toBe("[redacted]");
+      expect(JSON.stringify(terminal)).not.toContain("c_exact");
+      expect(collect).toHaveBeenCalledTimes(2);
+      expect(collect.mock.calls[1]?.[0].targetUrl).toBe(
+        "https://www.statbunker.com/players/SeasonMatches?comps_id=776&comps_type=EPL&player_id=60023",
+      );
+
+      const matches = await fetch(
+        `${baseUrl}/api/players/${encodeURIComponent(HAALAND_ID)}/matches?season=2025`,
+      );
+      expect(await matches.json()).toMatchObject({
+        data: {
+          available: true,
+          rows: [
+            expect.objectContaining({
+              opponent: "Liverpool",
+              venue: "away",
+              playerGoals: 1,
+              playerAssists: 1,
+              playerMinutes: 90,
+            }),
+          ],
+        },
+      });
+
+      const cached = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
+      });
+      expect(cached.status).toBe(200);
+      expect(collect).toHaveBeenCalledTimes(2);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("rate-limits public paid work without exposing an operator credential", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = [statBunkerHaalandRow()];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-rate-limit-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime, {
+      publicScrapeLimit: 1,
+    });
+
+    try {
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      );
+      expect(search.status).toBe(200);
+      expect(collect).toHaveBeenCalledTimes(1);
+
+      const limited = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
+      });
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toMatchObject({
+        error: { code: "rate_limited" },
+      });
+      expect(collect).toHaveBeenCalledTimes(1);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("falls back a season-less search to 2025/26 when 2026/27 has no verified rows", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = request.targetUrl.includes("comp_id=776")
+          ? [statBunkerHaalandRow()]
+          : [];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-empty-2026-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const explicitEmpty = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2026`,
+      );
+      expect(explicitEmpty.status).toBe(503);
+      expect(await explicitEmpty.json()).toMatchObject({
+        error: {
+          message:
+            "The live 2026/27 player directory returned no verified rows",
+        },
+      });
+
+      const fallback = await fetch(`${baseUrl}/api/search/players?q=haaland`);
+      expect(fallback.status).toBe(200);
+      const body = (await fallback.json()) as {
+        data: Array<{ playerName: string }>;
+      };
+      expect(body.data).toEqual([
+        expect.objectContaining({ playerName: "Erling Haaland" }),
+      ]);
+      expect(
+        collect.mock.calls.some((call) =>
+          String(call[0]?.targetUrl).includes("comp_id=791"),
+        ),
+      ).toBe(true);
+      expect(
+        collect.mock.calls.some((call) =>
+          String(call[0]?.targetUrl).includes("comp_id=776"),
+        ),
+      ).toBe(true);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("returns 202 immediately and exposes real scrape stages while work runs", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const observedAt = "2026-08-23T09:00:00.000Z";
+    const mapped = new StatBunkerRowMapper({
+      sourceId: STATBUNKER_SOURCE_ID,
+    }).map(statBunkerHaalandRow(), observedAt);
+    if (!mapped.ok) throw new Error("expected a valid StatBunker fixture");
+    runtime.pipeline.process(mapped.record, {
+      sourceId: STATBUNKER_SOURCE_ID,
+      extractorVersion: "index-seed",
+      observedAt,
+    });
+
+    let release!: (value: {
+      sourceId: string;
+      collectorId: string;
+      extractorVersion: string;
+      receivedAt: string;
+      rawPayloads?: unknown[];
+      payloads: unknown[];
+    }) => void;
+    const collect = vi.fn(
+      () =>
+        new Promise<{
+          sourceId: string;
+          collectorId: string;
+          extractorVersion: string;
+          receivedAt: string;
+          rawPayloads?: unknown[];
+          payloads: unknown[];
+        }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const response = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
+        },
+        body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
+      });
+      expect(response.status).toBe(202);
+      const acknowledgement = (await response.json()) as {
+        data: { runId: string; status: string };
+      };
+      expect(acknowledgement.data.status).toBe("starting_collector");
+
+      const pending = await fetch(
+        `${baseUrl}/api/scrapes/${acknowledgement.data.runId}`,
+      );
+      expect((await pending.json()) as unknown).toMatchObject({
+        data: { status: "starting_collector", terminalStatus: null },
+      });
+
+      release({
+        sourceId: STATBUNKER_SOURCE_ID,
+        collectorId: "c_exact",
+        extractorVersion: "statbunker-test",
+        receivedAt: observedAt,
+        rawPayloads: [statBunkerHaalandMatchRow()],
+        payloads: [statBunkerHaalandMatchRow()],
+      });
+
+      let terminal: { data: { status: string; card: unknown } } | null = null;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const polled = await fetch(
+          `${baseUrl}/api/scrapes/${acknowledgement.data.runId}`,
+        );
+        terminal = (await polled.json()) as {
+          data: { status: string; card: unknown };
+        };
+        if (terminal.data.status === "succeeded") break;
+      }
+      expect(terminal).toMatchObject({
+        data: {
+          status: "succeeded",
+          card: expect.objectContaining({ playerName: "Erling Haaland" }),
+        },
+      });
+      expect(collect).toHaveBeenCalledTimes(1);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("validates and reruns the exact player-match source through guarded healing", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const matchSource = `${STATBUNKER_SOURCE_ID}-matches-60023-2025`;
+    const healingProvider = new MockBrightDataHealingProvider([
+      statBunkerHaalandMatchRow(),
+    ]);
+    runtime.coordinator = new SelfHealingCoordinator(healingProvider, {
+      pollIntervalMs: 0,
+    });
+    runtime.pipeline.healingCoordinator = runtime.coordinator;
+
+    let repaired = false;
+    const collect = vi.fn(async (request: FootballCollectionRequest) => {
+      const rawRows = request.targetUrl.includes("PlayerStandings")
+        ? [statBunkerHaalandRow()]
+        : repaired
+          ? [statBunkerHaalandMatchRow()]
+          : [
+              {
+                schemaVersion: 1,
+                entityType: "match",
+                unexpected_layout: true,
+              },
+              {
+                schemaVersion: 1,
+                entityType: "match",
+                unexpected_layout: true,
+              },
+            ];
+      return {
+        sourceId: request.sourceId,
+        collectorId: "c_exact",
+        extractorVersion: "statbunker-test",
+        receivedAt: "2026-08-23T09:00:00.000Z",
+        rawPayloads: rawRows,
+        payloads: rawRows,
+      };
+    });
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+    const operatorHeaders = {
+      "content-type": "application/json",
+      "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
+    };
+
+    const runFailedGeneration = async (): Promise<void> => {
+      const started = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
+      });
+      expect(started.status).toBe(202);
+      const acknowledgement = (await started.json()) as {
+        data: { runId: string };
+      };
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const response = await fetch(
+          `${baseUrl}/api/scrapes/${acknowledgement.data.runId}`,
+        );
+        const body = (await response.json()) as { data: { status: string } };
+        if (body.data.status === "failed") return;
+      }
+      throw new Error("player-match generation did not fail as expected");
+    };
+
+    try {
+      const refresh = await fetch(`${baseUrl}/api/player-index/refresh`, {
+        method: "POST",
+        headers: operatorHeaders,
+        body: JSON.stringify({ season: "2025" }),
+      });
+      expect(refresh.status).toBe(200);
+
+      // First-ever structural drift is quarantined without healing; the same
+      // two-row signature must repeat before the coordinator mutates anything.
+      await runFailedGeneration();
+      expect(runtime.coordinator.getHealingState(matchSource)).toBe("healthy");
+      await runFailedGeneration();
+      expect(runtime.coordinator.getHealingState(matchSource)).toBe(
+        "healing_requested",
+      );
+
+      const progress = await fetch(
+        `${baseUrl}/api/dev/heal-progress?sourceId=${encodeURIComponent(matchSource)}`,
+        { method: "POST", headers: operatorHeaders },
+      );
+      expect(progress.status).toBe(200);
+      expect(await progress.json()).toMatchObject({
+        sourceId: matchSource,
+        healingState: "awaiting_approval",
+      });
+
+      const preview = await fetch(
+        `${baseUrl}/api/dev/validate-preview?sourceId=${encodeURIComponent(matchSource)}`,
+        { method: "POST", headers: operatorHeaders },
+      );
+      expect(preview.status).toBe(200);
+      expect(await preview.json()).toMatchObject({
+        success: true,
+        sourceId: matchSource,
+        healingState: "preview_valid",
+      });
+
+      repaired = true;
+      const approved = await fetch(
+        `${baseUrl}/api/dev/approve?sourceId=${encodeURIComponent(matchSource)}`,
+        {
+          method: "POST",
+          headers: operatorHeaders,
+          body: JSON.stringify({ approve: true }),
+        },
+      );
+      expect(approved.status).toBe(200);
+      expect(await approved.json()).toMatchObject({
+        success: true,
+        sourceId: matchSource,
+        healingState: "recovered",
+      });
+      expect(collect).toHaveBeenCalledTimes(4);
+
+      const card = await fetch(
+        `${baseUrl}/api/cards/${encodeURIComponent(HAALAND_ID)}?season=2025`,
+      );
+      expect(await card.json()).toMatchObject({
+        data: { stats: { goals: 1 } },
+      });
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("keeps live generation unavailable in mock mode", async () => {
+    const runtime = createRuntimeFromEnv({});
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+    try {
+      const response = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          playerId: "demo:erling-haaland",
+          season: "2025",
+          mode: "demo",
+        }),
+      });
+      expect(response.status).toBe(409);
     } finally {
       await stopRuntimeServer(server);
     }

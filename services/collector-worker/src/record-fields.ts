@@ -48,6 +48,24 @@ export function recordScalarFields(record: FootballRecord): RecordField[] {
         { field: "goalsAgainst", value: record.goalsAgainst },
         { field: "points", value: record.points },
       ];
+    case "match":
+      return [
+        { field: "playerName", value: record.playerName },
+        { field: "playerTeam", value: record.playerTeam },
+        { field: "playedOn", value: record.playedOn },
+        { field: "competition", value: record.competition },
+        { field: "homeTeam", value: record.homeTeam },
+        { field: "awayTeam", value: record.awayTeam },
+        { field: "homeGoals", value: record.homeGoals },
+        { field: "awayGoals", value: record.awayGoals },
+        { field: "venue", value: record.venue },
+        { field: "appeared", value: record.appeared ? 1 : 0 },
+        { field: "goals", value: record.goals },
+        { field: "assists", value: record.assists },
+        { field: "minutesPlayed", value: record.minutesPlayed },
+        { field: "yellowCards", value: record.yellowCards },
+        { field: "redCards", value: record.redCards },
+      ];
   }
 }
 

@@ -11,11 +11,12 @@ runbook below and keep your account-specific values only in an uncommitted
 
 ## Files
 
-| File                | Purpose                                                                                   |
-| ------------------- | ----------------------------------------------------------------------------------------- |
-| `create-prompt.txt` | Full prompt for creating the collector (`bdata scraper create`). Canonical byte source.   |
-| `heal-prompt.txt`   | Compact same-ID repair prompt (`bdata scraper heal` / `refactor_template`), ≤ 1000 chars. |
-| `studio-prompt.md`  | The prompts with rationale, output contract, and usage notes.                             |
+| File                                  | Purpose                                                                     |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| `create-prompt.txt`                   | Historical bounded collector creation prompt and evidence source.           |
+| `heal-prompt.txt`                     | Historical same-ID repair prompt used by the existing evidence trail.       |
+| `searchable-card-refactor-prompt.txt` | Same-ID dual-mode index + exact-player match refactor prompt, ≤ 1000 chars. |
+| `studio-prompt.md`                    | The prompts with rationale, output contracts, and usage notes.              |
 
 The live procedure — create, run, capture the `c_*` ID, connect CardPulse,
 heal/approve/rerun, redact evidence — is in
@@ -23,10 +24,12 @@ heal/approve/rerun, redact evidence — is in
 
 ## Output contract
 
-One JSON object per player, exactly 10 rows per run. Scraper Studio previews
-show all 14 requested keys; completed Bright Data datasets currently omit
-keys whose value is null and add an `input` provenance object. The mapper
-accepts that provider shape while validating every published field.
+The historical evidence run emitted exactly 10 player rows. The searchable
+card refactor emits every player row for a verified `PlayerStandings` input,
+or every completed-match row for one player when invoked with the public
+exact-name search URL. Scraper Studio can omit null-valued keys and add an
+`input` provenance object; the mapper accepts that provider shape while
+validating every published field.
 
 | Key                   | Type            | Notes                                             |
 | --------------------- | --------------- | ------------------------------------------------- |
@@ -53,8 +56,12 @@ explicit null; malformed or missing published fields are quarantined.
 
 - List page: `/competitions/PlayerStandings?comp_id=<digits>` ("Player
   standing - Overall" view).
+- Exact-name resolver: `/usual/search?action=Find&search=<name>&comps_id=<id>&comps_type=EPL`.
+- Match page: `/players/SeasonMatches?comps_id=<id>&comps_type=EPL&player_id=<numeric-id>`.
 - This specific list page does not expose player-detail links. CardPulse does
-  not invent a detail URL or minutes value when the source does not publish it.
+  not invent one. Generation resolves exactly one name through the public
+  search page, requires a numeric player ID, and verifies that every returned
+  match row repeats the same identity and canonical match URL.
 
 Pick one competition/season list page as the seed URL and keep it stable for
 the whole evidence trail.

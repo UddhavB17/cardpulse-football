@@ -138,9 +138,9 @@ target or provider means stop and reassess — do not retry through blocks.
 
 ## Step 6 — Connect CardPulse live mode
 
-Generate the operator token, then add both lines to `.env` in your editor
-(still uncommitted), pasting the generated value as a literal string — never
-as part of a shell command:
+Generate the server-only admin token, then add both lines to `.env` in your
+editor (still uncommitted), pasting the generated value as a literal string —
+never as part of a shell command:
 
 ```bash
 openssl rand -hex 32     # copy the output into .env below
@@ -161,8 +161,10 @@ curl -s http://127.0.0.1:4321/api/runtime | jq   # expect mode: "live", valid c_
 pnpm collect               # one CardPulse cycle: trigger → poll → map → validate → snapshot
 ```
 
-The UI badge and `/api/runtime` now say `live`. Every billable mutation stays
-denied unless `CARDPULSE_ENABLE_LIVE_MUTATIONS=true` **and** requests carry
+The UI badge and `/api/runtime` now say `live`. Public search preparation and
+card generation require `CARDPULSE_ENABLE_LIVE_MUTATIONS=true`, but the browser
+never sends or displays a secret; those routes are cached, deduplicated, and
+rate-limited. Healing and `/api/dev/*` mutations additionally require
 `X-CardPulse-Operator-Token: <value>`.
 
 ## Step 7 — Same-ID heal / approval / rerun flow
@@ -212,7 +214,7 @@ routes (all require the operator token header):
 
 Watch the healing state advance
 `quarantined → healing_requested → awaiting_approval → preview_valid →
-approved → recovered` at `GET /api/healing/statbunker-epl-2025-26`, and
+approved → recovered` at `GET /api/healing/statbunker-premier-league`, and
 record the recovery hashes/counts it exposes.
 
 Assert identity preservation across every artifact:
@@ -221,6 +223,29 @@ Assert identity preservation across every artifact:
 grep -rhoE 'c_[A-Za-z0-9_-]+' "$TMPDIR"/cardpulse-statbunker-*.json | sort -u
 # after redaction this must show exactly ONE partially masked ID everywhere
 ```
+
+### Step 7a — Searchable-card same-ID refactor
+
+Before recording the searchable player-card flow, refactor the same collector
+with the current dual-mode prompt (this is a separate billable/mutating action
+and still requires explicit approval):
+
+```bash
+bdata scraper heal "$BRIGHT_DATA_COLLECTOR_ID" \
+  "$(cat scrapers/statbunker/searchable-card-refactor-prompt.txt)" \
+  --url "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776" \
+  > "$TMPDIR/cardpulse-searchable-refactor.json"
+```
+
+Review a non-empty `PlayerStandings` preview whose rows carry the input
+`comp_id`'s mapped season, then explicitly approve the same `c_*` collector.
+After approval, the cold Erling Haaland path needs two deliberately authorized
+collections: one full season-index refresh, then one Generate run whose input
+is the exact-name `/usual/search` URL and whose output rows all repeat the same
+numeric player ID and canonical `SeasonMatches` source URL. A warm/stale later
+Generate uses that cached numeric ID directly. Do not claim that the refactor
+preview proves both branches; the narrow post-approval resolver run is the
+observable check for the second branch.
 
 ## Step 8 — Redact and file evidence
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  hydrateFlowState,
+  RAIL_LABELS,
+  RAIL_STEPS,
+  completedSteps,
   initialFlowState,
-  isChromeGlitched,
-  railStepIndex,
+  isWorkPending,
   transition,
   type FlowEvent,
   type FlowState,
@@ -14,165 +15,155 @@ function run(state: FlowState, events: FlowEvent[]): FlowState {
   return events.reduce((current, event) => transition(current, event), state);
 }
 
-describe("generate flow", () => {
-  it("advances idle -> connecting -> extracting -> validating -> materializing -> verified", () => {
-    const final = run(initialFlowState(), [
-      { type: "generate-start" },
-      { type: "connection-established" },
-      { type: "extraction-complete" },
-      { type: "validation-passed", cardId: "player-1" },
-      { type: "card-materialized" },
-    ]);
+function liveRun(): FlowState {
+  return run(initialFlowState(), [
+    { type: "begin", mode: "live" },
+    { type: "player-found" },
+    { type: "collector-accepted" },
+    { type: "extraction-complete" },
+    { type: "validation-passed", cardId: "player-1" },
+    { type: "card-printed", cardId: "player-1" },
+  ]);
+}
 
-    expect(final.phase).toBe("verified");
-    expect(final.recovery).toBe("none");
-    expect(final.preservedCardId).toBe("player-1");
-    expect(final.error).toBeNull();
+describe("rail vocabulary", () => {
+  it("exposes exactly the five truthful operations in order", () => {
+    expect([...RAIL_STEPS]).toEqual([
+      "finding-player",
+      "starting-collector",
+      "extracting-statistics",
+      "validating-data",
+      "printing-card",
+    ]);
+    expect(RAIL_LABELS["finding-player"]).toBe("Finding player");
+    expect(RAIL_LABELS["starting-collector"]).toBe("Starting collector");
+    expect(RAIL_LABELS["extracting-statistics"]).toBe("Extracting statistics");
+    expect(RAIL_LABELS["validating-data"]).toBe("Validating data");
+    expect(RAIL_LABELS["printing-card"]).toBe("Printing card");
+  });
+});
+
+describe("generation flow", () => {
+  it("advances through all five steps only as async milestones resolve", () => {
+    let state = initialFlowState();
+    expect(isWorkPending(state)).toBe(false);
+
+    state = transition(state, { type: "begin", mode: "live" });
+    expect(state.generation).toMatchObject({
+      kind: "running",
+      step: "finding-player",
+      mode: "live",
+    });
+    // No step is complete before its request resolves.
+    expect(completedSteps(state).size).toBe(0);
+
+    state = transition(state, { type: "player-found" });
+    expect(state.generation).toMatchObject({ step: "starting-collector" });
+    expect(completedSteps(state)).toContain("finding-player");
+
+    state = transition(state, { type: "collector-accepted" });
+    expect(state.generation).toMatchObject({ step: "extracting-statistics" });
+
+    state = transition(state, { type: "extraction-complete" });
+    expect(state.generation).toMatchObject({ step: "validating-data" });
+
+    state = transition(state, { type: "validation-passed", cardId: "p1" });
+    expect(state.generation).toMatchObject({ step: "printing-card" });
+
+    state = transition(state, { type: "card-printed", cardId: "p1" });
+    expect(state.generation.kind).toBe("done");
+    expect(isWorkPending(state)).toBe(false);
+    expect(completedSteps(state).size).toBe(5);
+    expect(state.preservedCardId).toBe("p1");
   });
 
-  it("rejects out-of-order steps without corrupting state", () => {
-    const rejected = transition(initialFlowState(), {
-      type: "extraction-complete",
+  it("ignores out-of-order milestones instead of faking progress", () => {
+    const rejected = run(initialFlowState(), [
+      { type: "begin", mode: "live" },
+      { type: "extraction-complete" },
+    ]);
+    expect(rejected.generation).toMatchObject({
+      kind: "running",
+      step: "finding-player",
     });
 
-    expect(rejected.phase).toBe("idle");
-    expect(rejected.error).toContain("out of order");
-  });
+    const idleRejected = transition(initialFlowState(), {
+      type: "card-printed",
+      cardId: "x",
+    });
+    expect(idleRejected.generation.kind).toBe("idle");
 
-  it("blocks the pipeline when connection fails and records the reason", () => {
-    const blocked = run(initialFlowState(), [
-      { type: "generate-start" },
-      { type: "connection-failed", reason: "API unreachable" },
+    const doubleBegin = run(initialFlowState(), [
+      { type: "begin", mode: "live" },
+      { type: "begin", mode: "live" },
     ]);
-
-    expect(blocked.phase).toBe("blocked");
-    expect(blocked.error).toBe("API unreachable");
-
-    // A retry from blocked restarts the generation chain cleanly.
-    const retried = transition(blocked, { type: "generate-start" });
-    expect(retried.phase).toBe("connecting");
-    expect(retried.error).toBeNull();
+    expect(doubleBegin.generation).toMatchObject({
+      kind: "running",
+      step: "finding-player",
+    });
   });
 
-  it("a failed validation preserves the previously verified card id", () => {
-    const verified = run(initialFlowState(), [
-      { type: "generate-start" },
-      { type: "connection-established" },
+  it("lets a synchronous generate response skip the poll wait truthfully", () => {
+    const syncCard = run(initialFlowState(), [
+      { type: "begin", mode: "live" },
+      { type: "collector-accepted" },
       { type: "extraction-complete" },
-      { type: "validation-passed", cardId: "hero-v1" },
-      { type: "card-materialized" },
+      { type: "validation-passed", cardId: "cached-1" },
+      { type: "card-printed", cardId: "cached-1" },
     ]);
+    expect(syncCard.generation.kind).toBe("done");
+    expect(syncCard.preservedCardId).toBe("cached-1");
+  });
 
-    const regenerating = transition(verified, { type: "generate-start" });
+  it("fails into the pending step and preserves the last printed card", () => {
+    const verified = liveRun();
+    const regenerating = transition(verified, { type: "begin", mode: "live" });
     const failed = run(regenerating, [
-      { type: "connection-established" },
-      { type: "extraction-complete" },
-      {
-        type: "validation-failed",
-        reason: "Contract drift",
-        preservedCardId: null,
-      },
+      { type: "player-found" },
+      { type: "failed", reason: "Collector returned 503" },
     ]);
 
-    expect(failed.phase).toBe("blocked");
-    expect(failed.recovery).toBe("compromised");
-    // The preserved card survives even though no new one was passed in.
-    expect(failed.preservedCardId).toBe("hero-v1");
-    expect(failed.error).toBe("Contract drift");
-  });
-});
-
-describe("drift recovery flow", () => {
-  function verifiedState(): FlowState {
-    return run(initialFlowState(), [
-      { type: "generate-start" },
-      { type: "connection-established" },
-      { type: "extraction-complete" },
-      { type: "validation-passed", cardId: "hero-v1" },
-      { type: "card-materialized" },
-    ]);
-  }
-
-  it("walks compromised -> repair-requested -> preview-valid -> recovered", () => {
-    const recovered = run(verifiedState(), [
-      { type: "drift-confirmed", preservedCardId: "hero-v1" },
-      { type: "repair-requested" },
-      { type: "preview-resolved", valid: true },
-      { type: "repair-approved", outcome: "recovered" },
-    ]);
-
-    expect(recovered.recovery).toBe("recovered");
-    expect(recovered.phase).toBe("verified");
-    expect(recovered.preservedCardId).toBe("hero-v1");
-    expect(isChromeGlitched(recovered)).toBe(false);
-  });
-
-  it("glitches chrome through every recovery phase until recovery lands", () => {
-    let current = verifiedState();
-    for (const event of [
-      { type: "drift-confirmed", preservedCardId: "hero-v1" },
-      { type: "repair-requested" },
-      { type: "preview-resolved", valid: true },
-    ] as const) {
-      current = transition(current, event);
-      expect(isChromeGlitched(current)).toBe(true);
+    expect(failed.generation).toMatchObject({
+      kind: "failed",
+      reason: "Collector returned 503",
+    });
+    if (failed.generation.kind === "failed") {
+      expect(failed.generation.step).toBe("starting-collector");
     }
+    // The previously verified card survives untouched.
+    expect(failed.preservedCardId).toBe("player-1");
+    expect(isWorkPending(failed)).toBe(false);
   });
 
-  it("refuses approval before a preview resolves", () => {
-    const guarded = transition(
-      run(verifiedState(), [
-        { type: "drift-confirmed", preservedCardId: "hero-v1" },
-        { type: "repair-requested" },
+  it("stops glitching instantly on success or failure", () => {
+    const running = transition(initialFlowState(), {
+      type: "begin",
+      mode: "live",
+    });
+    const polling = transition(running, { type: "player-found" });
+    expect(isWorkPending(polling)).toBe(true);
+    const settled = transition(polling, {
+      type: "failed",
+      reason: "poll timeout",
+    });
+    expect(isWorkPending(settled)).toBe(false);
+
+    const done = transition(
+      run(initialFlowState(), [
+        { type: "begin", mode: "live" },
+        { type: "player-found" },
+        { type: "collector-accepted" },
+        { type: "extraction-complete" },
+        { type: "validation-passed", cardId: "d1" },
       ]),
-      { type: "repair-approved", outcome: "recovered" },
+      { type: "card-printed", cardId: "d1" },
     );
-
-    expect(guarded.recovery).toBe("repair-requested");
-    expect(guarded.error).toContain("validated preview");
+    expect(isWorkPending(done)).toBe(false);
   });
 
-  it("records a safe failure outcome without losing the preserved card", () => {
-    const failed = run(verifiedState(), [
-      { type: "drift-confirmed", preservedCardId: "hero-v1" },
-      { type: "repair-requested" },
-      { type: "preview-resolved", valid: true },
-      { type: "repair-approved", outcome: "failed" },
-    ]);
-
-    expect(failed.recovery).toBe("recovery-failed");
-    expect(failed.preservedCardId).toBe("hero-v1");
-  });
-
-  it("ignores drift confirmation unless a card is verified", () => {
-    const rejected = transition(initialFlowState(), {
-      type: "drift-confirmed",
-      preservedCardId: null,
-    });
-
-    expect(rejected.recovery).toBe("none");
-    expect(rejected.error).toContain("verified");
-  });
-
-  it("hydrates an interrupted recovery without restarting collection", () => {
-    expect(hydrateFlowState("healing_requested", "hero-v1")).toMatchObject({
-      phase: "verified",
-      recovery: "compromised",
-      preservedCardId: "hero-v1",
-    });
-    expect(hydrateFlowState("preview_valid", "hero-v1").recovery).toBe(
-      "preview-valid",
+  it("reset returns to a clean machine without a preserved id", () => {
+    expect(transition(liveRun(), { type: "reset" })).toEqual(
+      initialFlowState(),
     );
-    expect(hydrateFlowState("approved", "hero-v1").recovery).toBe("approved");
-    expect(hydrateFlowState("recovered", "hero-v1").recovery).toBe("recovered");
-  });
-});
-
-describe("rail mapping", () => {
-  it("maps phases onto ordered rail steps with blocked last", () => {
-    expect(railStepIndex("idle")).toBe(0);
-    expect(railStepIndex("extracting")).toBe(2);
-    expect(railStepIndex("verified")).toBe(5);
-    expect(railStepIndex("blocked")).toBe(6);
   });
 });

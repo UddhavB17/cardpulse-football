@@ -2,6 +2,7 @@ import {
   validPlayerFixture,
   demoRecordsFor,
 } from "@bidsentinel/contracts/fixtures";
+import { redactCollectorId } from "@bidsentinel/contracts";
 import { mapRawRowToFootballRecord } from "@bidsentinel/brightdata";
 
 import { createRuntimeFromEnv, runConfiguredCollection } from "./runtime.js";
@@ -10,7 +11,17 @@ async function main() {
   const runtime = createRuntimeFromEnv();
   if (runtime.mode === "live") {
     const summary = await runConfiguredCollection(runtime);
-    console.log(JSON.stringify({ mode: "live", ...summary }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          mode: "live",
+          ...summary,
+          collectorId: redactCollectorId(summary.collectorId),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 
