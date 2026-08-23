@@ -26,10 +26,14 @@ import {
   buildClubViews,
   buildPlayerCard,
   buildReliabilityView,
-  buildTeamViews,
   describeHealing,
   describeStatChange,
   isCompromisedState,
+  resolveDataLabel,
+  resolveModeChip,
+  resolveStandingsMode,
+  resolveTeamSectionState,
+  standingsTableCopy,
   type SourceHealthLike,
 } from "./football/mapping";
 import { buildSeasonTable, clubForId } from "./football/content";
@@ -334,15 +338,14 @@ function paintHeroFacts(): void {
 
 function resolveDataLabelText(): string {
   if (state.snapshot === null) return "…";
-  const live =
-    state.snapshot.runtime.mode === "live" && !state.usingFixtureAdapter;
-  return live ? "LIVE PROVIDER" : "DEMO DATA";
+  // Delegates to the tested mapping helper so the card face, hero facts and
+  // drawer can never disagree about mock/live labelling.
+  return resolveDataLabel(state.snapshot.runtime, state.usingFixtureAdapter);
 }
 
 function resolveModeChipText(): string {
-  if (state.usingFixtureAdapter) return "MOCK PIPELINE";
-  if (state.snapshot?.runtime.mode === "live") return "LIVE PROVIDER";
-  return "LOCAL API";
+  if (state.snapshot === null) return "…";
+  return resolveModeChip(state.snapshot.runtime, state.usingFixtureAdapter);
 }
 
 function paintRail(): void {
@@ -646,25 +649,14 @@ function paintNotices(): void {
 function paintTeams(): void {
   const grid = qs("#team-grid");
   if (grid === null || state.snapshot === null) return;
-  const sources = sourceList(state.snapshot);
-  const teams = buildTeamViews(
-    state.snapshot.teams.data.map((team) => ({
-      teamId: team.teamId,
-      sourceId: team.sourceId,
-      name: team.name,
-      shortName: team.shortName,
-      city: team.city,
-      stadium: team.stadium,
-      coach: team.coach,
-      founded: team.founded,
-      observedAt: team.observedAt,
-      latestSnapshot: team.latestSnapshot,
-    })),
-    sources,
-  );
+  const section = resolveTeamSectionState({
+    teams: state.snapshot.teams.data,
+    sources: sourceList(state.snapshot),
+    playerCount: state.snapshot.players.pagination.total,
+  });
 
-  if (teams.length > 0) {
-    grid.innerHTML = teams
+  if (section.kind === "team-cards") {
+    grid.innerHTML = section.teams
       .map(
         (team) => `<article class="team-card">
           <header>
@@ -689,39 +681,41 @@ function paintTeams(): void {
     return;
   }
 
-  // No tracked teams yet: fall back to source-integrity club cards.
-  const clubs = buildClubViews(sources);
-  if (clubs.length === 0) {
-    grid.innerHTML = `<p class="empty-note">No tracked teams yet — run the pipeline once.</p>`;
+  if (section.kind === "source-cards") {
+    // No tracked team metadata: fall back to source-integrity club cards.
+    grid.innerHTML = section.clubs
+      .map((club) => {
+        const incidentNote =
+          club.incidentReason !== null
+            ? `<p class="incident-note"><strong>${escapeHtml(club.incidentReason)}</strong> — extraction damage is quarantined here, never printed onto cards.</p>`
+            : "";
+        const actions =
+          club.recoveryActions.length > 0
+            ? `<ul class="recovery-actions-list">${club.recoveryActions
+                .map((action) => `<li>${escapeHtml(action)}</li>`)
+                .join("")}</ul>`
+            : "";
+        return `<article class="team-card">
+          <header>
+            <h3>${escapeHtml(club.clubCode)} · source</h3>
+            <span class="state-pill ${club.state}">${escapeHtml(club.state)}</span>
+          </header>
+          <dl>
+            <div><dt>Source id</dt><dd>${escapeHtml(club.sourceId)}</dd></div>
+            <div><dt>Fail streak</dt><dd>${club.consecutiveFailures}</dd></div>
+            <div><dt>Recent failures</dt><dd>${club.recentFailureRate}%</dd></div>
+            <div><dt>Last healthy</dt><dd>${escapeHtml(formatTimestamp(club.lastSuccessfulAt))}</dd></div>
+          </dl>
+          ${incidentNote}${actions}
+        </article>`;
+      })
+      .join("");
     return;
   }
-  grid.innerHTML = clubs
-    .map((club) => {
-      const incidentNote =
-        club.incidentReason !== null
-          ? `<p class="incident-note"><strong>${escapeHtml(club.incidentReason)}</strong> — extraction damage is quarantined here, never printed onto cards.</p>`
-          : "";
-      const actions =
-        club.recoveryActions.length > 0
-          ? `<ul class="recovery-actions-list">${club.recoveryActions
-              .map((action) => `<li>${escapeHtml(action)}</li>`)
-              .join("")}</ul>`
-          : "";
-      return `<article class="team-card">
-        <header>
-          <h3>${escapeHtml(club.clubCode)} · source</h3>
-          <span class="state-pill ${club.state}">${escapeHtml(club.state)}</span>
-        </header>
-        <dl>
-          <div><dt>Source id</dt><dd>${escapeHtml(club.sourceId)}</dd></div>
-          <div><dt>Fail streak</dt><dd>${club.consecutiveFailures}</dd></div>
-          <div><dt>Recent failures</dt><dd>${club.recentFailureRate}%</dd></div>
-          <div><dt>Last healthy</dt><dd>${escapeHtml(formatTimestamp(club.lastSuccessfulAt))}</dd></div>
-        </dl>
-        ${incidentNote}${actions}
-      </article>`;
-    })
-    .join("");
+
+  // Empty secondary datasets are expected states, so they render as calm,
+  // explanatory copy — never as an error.
+  grid.innerHTML = `<p class="empty-note">${escapeHtml(section.note)}</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -802,18 +796,20 @@ function paintStandings(): void {
   const tbody = qs("#standings-body");
   if (tbody === null) return;
   const table = activeStandingsTable();
-  const providerBacked = table.rows[0]?.key.startsWith("p:") ?? false;
+  // Captions/notes come from one tested helper so the simulated league can
+  // never drift into provider-sounding language.
+  const providerBacked =
+    state.snapshot?.runtime.mode === "live" && !state.usingFixtureAdapter;
+  const copy = standingsTableCopy(
+    resolveStandingsMode(table.rows.length, providerBacked),
+  );
   const caption = qs("#standings-caption");
   if (caption !== null) {
-    caption.textContent = providerBacked
-      ? "Season 2025 · provider-synced table · labelled by runtime"
-      : "Season 25/26 · simulated league · demo data";
+    caption.textContent = copy.caption;
   }
   const note = qs("#standings-note");
   if (note !== null) {
-    note.textContent = providerBacked
-      ? "Rows come from the verified standings snapshot · arrows show reorder since last sync"
-      : "Simulated standings · fictional clubs · always demo data";
+    note.textContent = copy.note;
   }
   const nextOrder = table.orderKeys;
   const shifts = orderShifts(state.previousTableOrder, nextOrder);

@@ -1,0 +1,22 @@
+{
+  "evidenceType": "bright-data-live-run-failure",
+  "capturedOn": "2026-08-23",
+  "collectorId": "c_mt5dc5****6vbb",
+  "collectorName": "cardpulse-statbunker-epl-2526",
+  "sourceId": "statbunker-epl-2025-26",
+  "targetUrl": "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+  "run": {
+    "triggerAccepted": true,
+    "resultStatus": "failed",
+    "errorCode": "wait_element_timeout",
+    "error": "Crawler error: waiting for selector \"#show\" failed: timeout 30000ms exceeded"
+  },
+  "sameIdHealing": {
+    "requested": true,
+    "approved": false,
+    "saved": false,
+    "status": "provider-job-still-running-after-cli-timeout",
+    "note": "A second selector-only repair was refused with HTTP 409 because the original same-ID refactor job was still active. No unreviewed preview was approved."
+  },
+  "claimBoundary": "This proves a real Bright Data trigger, a real target-side extraction failure, and a same-ID healing attempt. It is not evidence of a successful scrape or completed recovery."
+}

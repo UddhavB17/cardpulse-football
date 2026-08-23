@@ -1,37 +1,39 @@
 {
-  "data": [
+  "illustrative_only": true,
+  "description": "Hand-written illustration of the canonical row shape defined by scrapers/statbunker/studio-prompt.md for a StatBunker Scraper Studio collector. This file was NOT produced by a successful live collector run. Names and numbers are fictional CardPulse demo values, and URLs are placeholders that follow the site's public URL patterns. Separate redacted evidence records the real first-run selector failure without pretending it succeeded.",
+  "row_count_note": "A real run returns exactly 10 rows; two are shown here for brevity.",
+  "rows": [
     {
-      "schemaVersion": 1,
-      "playerId": "openligadb:player:finn-krueger",
-      "sourceId": "openligadb",
-      "playerName": "Finn Krüger",
-      "team": {
-        "teamId": "openligadb:rheinland-fc-04",
-        "name": "Rheinland FC 04"
-      },
+      "player_name": "Finn Krüger",
+      "player_url": "https://www.statbunker.com/players/getPlayerStats?player_id=9000000001",
+      "team_name": "Rheinland FC 04",
       "position": "forward",
-      "shirtNumber": 11,
+      "appearances": 33,
+      "goals": 18,
+      "assists": 5,
+      "yellow_cards": 3,
+      "second_yellow_cards": 0,
+      "red_cards": 0,
+      "minutes_played": 2820,
+      "nationality": "Germany",
       "season": "2025",
-      "stats": {
-        "appearances": 33,
-        "goals": 18,
-        "assists": 5,
-        "yellowCards": 3,
-        "redCards": 0,
-        "minutesPlayed": 2820
-      },
-      "observedAt": "2026-08-20T14:00:00.000Z",
-      "latestSnapshot": {
-        "snapshotId": "eaaea76a-cb86-44c6-9846-ec287979ca9a",
-        "version": 1
-      }
+      "source_url": "https://www.statbunker.com/competitions/PlayerStandings?comp_id=900000001"
+    },
+    {
+      "player_name": "Luka Marić",
+      "player_url": "https://www.statbunker.com/players/getPlayerStats?player_id=9000000002",
+      "team_name": "Rheinland FC 04",
+      "position": "defender",
+      "appearances": 31,
+      "goals": 2,
+      "assists": null,
+      "yellow_cards": 6,
+      "second_yellow_cards": 1,
+      "red_cards": 0,
+      "minutes_played": 2705,
+      "nationality": "Croatia",
+      "season": "2025",
+      "source_url": "https://www.statbunker.com/competitions/PlayerStandings?comp_id=900000001"
     }
-  ],
-  "pagination": {
-    "limit": 1,
-    "offset": 0,
-    "total": 3,
-    "hasMore": true
-  },
-  "generatedAt": "2026-08-22T19:45:11.702Z"
+  ]
 }

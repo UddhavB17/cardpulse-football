@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-23T09:16:42Z",
+  "source": {
+    "name": "StatBunker Premier League 25/26 PlayerStandings",
+    "url": "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+    "httpStatusDuringManualShapeCheck": 200
+  },
+  "provider": {
+    "name": "Bright Data Scraper Studio",
+    "cliVersion": "0.3.5",
+    "collectorIdRedacted": "c_mt5dc5****6vbb",
+    "sameCollectorThroughout": true
+  },
+  "recoverySequence": [
+    {
+      "step": "pre_repair_run",
+      "status": "failed",
+      "errorCode": "wait_element_timeout",
+      "error": "Crawler waited for missing selector #show"
+    },
+    {
+      "step": "first_review_gate",
+      "status": "rejected",
+      "reason": "Preview shifted the stat columns; Jarrod Bowen appearances was 9 instead of 38"
+    },
+    {
+      "step": "corrected_review_gate",
+      "status": "approved",
+      "previewSampleRows": 2,
+      "keysPerPreviewRow": 14,
+      "schemaTypesValid": true,
+      "liveSentinelValid": true,
+      "approvalCommandRequestedAutoSave": true
+    },
+    {
+      "step": "post_repair_same_id_run",
+      "status": "succeeded",
+      "responseIdRedacted": "d2t178****1s8",
+      "rowCount": 10,
+      "providerErrorRows": 0,
+      "uniquePlayerTeamIdentities": 10,
+      "stableProviderKeySet": true,
+      "providerKeysPerRow": 12,
+      "providerShapeNote": "Completed datasets omitted the three null enrichment keys and added input provenance",
+      "numericStatsValid": true,
+      "liveSentinelValid": true,
+      "rawPayloadSha256": "308d4ad3fc814f45edfbc6d3e890288084fe69e748127843e67a590224b11716"
+    },
+    {
+      "step": "cardpulse_mapper",
+      "status": "succeeded",
+      "inputRows": 10,
+      "acceptedRows": 10,
+      "rejectedRows": 0,
+      "canonicalSchemaValid": true,
+      "pipelineAcceptedRows": 10,
+      "pipelineQuarantinedRows": 0,
+      "snapshotsCreated": 10,
+      "sourceState": "healthy",
+      "unpublishedMinutesRepresentation": null
+    }
+  ],
+  "publicSentinel": {
+    "playerName": "Jarrod Bowen",
+    "teamName": "West Ham United",
+    "appearances": 38,
+    "goals": 9,
+    "assists": 11,
+    "yellowCards": 4,
+    "secondYellowCards": 0,
+    "redCards": 0
+  },
+  "claimBoundary": "This artifact proves a real Bright Data same-collector repair and successful CardPulse mapper pass. It contains no API token, operator token, cookies, full collector ID, or full response ID. It does not by itself prove the deployed browser/API live-mode experience."
+}

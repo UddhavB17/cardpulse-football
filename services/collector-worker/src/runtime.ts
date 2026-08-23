@@ -4,7 +4,11 @@ import {
   BrightDataApiError,
   BrightDataCollectionProvider,
   BrightDataHealingProvider,
+  DEFAULT_STATBUNKER_SOURCE_ID,
   MockBrightDataHealingProvider,
+  STATBUNKER_SOURCE_PROFILE,
+  createStatBunkerPipelineRowMapper,
+  statBunkerSourceIdMatches,
   type FootballCollectionBatch,
   type FootballCollectionProvider,
 } from "@bidsentinel/brightdata";
@@ -69,10 +73,27 @@ export function createRuntimeFromEnv(
   const apiToken = env.BRIGHT_DATA_API_TOKEN?.trim() ?? "";
   const rawCollectorId = env.BRIGHT_DATA_COLLECTOR_ID?.trim() ?? "";
   const targetUrl = env.BRIGHT_DATA_TARGET_URL?.trim() ?? "";
+  // Source profile selects the named mapping boundary applied to dataset
+  // rows. Unset/empty keeps the historical generic behavior; "statbunker"
+  // routes rows through the StatBunker boundary with its standardized
+  // default source ID. Profiles change mapping only, never transport,
+  // collector-ID handling, healing, or mock-mode safety.
+  const sourceProfile = (env.CARDPULSE_SOURCE_PROFILE ?? "")
+    .trim()
+    .toLowerCase();
+  const profileIssues: string[] = [];
+  let profileDefaultSourceId = "openligadb";
+  if (sourceProfile === STATBUNKER_SOURCE_PROFILE) {
+    profileDefaultSourceId = DEFAULT_STATBUNKER_SOURCE_ID;
+  } else if (sourceProfile !== "" && sourceProfile !== "generic") {
+    profileIssues.push(
+      `CARDPULSE_SOURCE_PROFILE "${sourceProfile}" is not a recognized source profile; using the generic mapper`,
+    );
+  }
   const sourceId =
     env.CARDPULSE_SOURCE_ID?.trim() ||
     env.BIDSENTINEL_SOURCE_ID?.trim() ||
-    "openligadb";
+    profileDefaultSourceId;
   const liveMutationFlag = (
     env.CARDPULSE_ENABLE_LIVE_MUTATIONS ??
     env.BIDSENTINEL_ENABLE_LIVE_MUTATIONS ??
@@ -125,15 +146,26 @@ export function createRuntimeFromEnv(
       sourceId,
       collectorId: collectorId === "" ? null : collectorId,
       targetUrl: null,
-      configurationIssues: missing,
+      configurationIssues: [...missing, ...profileIssues],
       liveMutationsEnabled: false,
       operatorTokenHash: null,
     };
   }
 
+  // Named source profiles own their row boundary. The StatBunker boundary is
+  // selected either explicitly via CARDPULSE_SOURCE_PROFILE=statbunker or
+  // implicitly when the resolved source ID is the standardized StatBunker
+  // one. Rows it rejects fall back to the raw row so pipeline quarantine and
+  // drift signals stay authoritative.
+  const useStatBunkerBoundary =
+    sourceProfile === STATBUNKER_SOURCE_PROFILE ||
+    statBunkerSourceIdMatches(sourceId);
   const collectionProvider = new BrightDataCollectionProvider({
     apiToken,
     collectorId,
+    ...(useStatBunkerBoundary
+      ? { rowMapper: createStatBunkerPipelineRowMapper() }
+      : {}),
   });
   const healingProvider = new BrightDataHealingProvider({ apiToken });
   const coordinator = new SelfHealingCoordinator(healingProvider);
@@ -147,6 +179,7 @@ export function createRuntimeFromEnv(
     collectorId,
     targetUrl,
     configurationIssues: [
+      ...profileIssues,
       ...(liveMutationFlag !== "true"
         ? ["CARDPULSE_ENABLE_LIVE_MUTATIONS is not true"]
         : []),

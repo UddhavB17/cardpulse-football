@@ -53,7 +53,7 @@ export interface PlayerSummaryLike {
     assists: number;
     yellowCards: number;
     redCards: number;
-    minutesPlayed: number;
+    minutesPlayed: number | null;
   };
   observedAt: string | null;
   latestSnapshot: { snapshotId: string; version: number };
@@ -157,7 +157,11 @@ const STAT_SCALES = {
 function toAttributes(
   stats: PlayerSummaryLike["stats"],
 ): PlayerCardView["attributes"] {
-  return [
+  const entries: Array<{
+    label: string;
+    value: number | null;
+    scale: number;
+  }> = [
     { label: "GOALS", value: stats.goals, scale: STAT_SCALES.GOALS },
     { label: "ASSISTS", value: stats.assists, scale: STAT_SCALES.ASSISTS },
     {
@@ -170,14 +174,22 @@ function toAttributes(
       value: stats.minutesPlayed,
       scale: STAT_SCALES.MINUTES,
     },
-  ].map((entry) => ({
-    label: entry.label,
-    value: entry.value,
-    pct: Math.max(
-      4,
-      Math.min(100, Math.round((entry.value / entry.scale) * 100)),
-    ),
-  }));
+  ];
+
+  return entries.flatMap((entry) =>
+    entry.value === null
+      ? []
+      : [
+          {
+            label: entry.label,
+            value: entry.value,
+            pct: Math.max(
+              4,
+              Math.min(100, Math.round((entry.value / entry.scale) * 100)),
+            ),
+          },
+        ],
+  );
 }
 
 function toFormMarks(seedSource: string): FormMark[] {
@@ -279,6 +291,80 @@ export function buildClubViews(
     incidentDetail: source.activeIncident?.detail ?? null,
     recoveryActions: source.latestRecoveryEvidence?.actions ?? [],
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Section render states — empty secondary datasets must never look broken
+// ---------------------------------------------------------------------------
+
+/**
+ * Which visual state the "Team summary" section should render.
+ * A player-rows-only collector (e.g. StatBunker EPL 25/26) legitimately serves
+ * an empty team list, so that case gets explanatory copy instead of an error.
+ */
+export type TeamSectionState =
+  | { kind: "team-cards"; teams: TeamCardView[] }
+  | { kind: "source-cards"; clubs: ClubIntegrityView[] }
+  | { kind: "player-only"; note: string }
+  | { kind: "empty"; note: string };
+
+const TEAM_SECTION_EMPTY_NOTE = "No tracked teams yet — run the pipeline once.";
+
+export function resolveTeamSectionState(options: {
+  teams: readonly TeamListItemLike[];
+  sources: readonly SourceHealthLike[];
+  playerCount: number;
+}): TeamSectionState {
+  if (options.teams.length > 0) {
+    return {
+      kind: "team-cards",
+      teams: buildTeamViews(options.teams, options.sources),
+    };
+  }
+  if (options.sources.length > 0) {
+    return { kind: "source-cards", clubs: buildClubViews(options.sources) };
+  }
+  if (options.playerCount > 0) {
+    return {
+      kind: "player-only",
+      note:
+        `This collector extracts verified player rows only — the empty team ` +
+        `summary is expected, not a failure. ${options.playerCount} verified ` +
+        `player records remain available.`,
+    };
+  }
+  return { kind: "empty", note: TEAM_SECTION_EMPTY_NOTE };
+}
+
+/** Whether the standings table shows provider rows or the demo simulation. */
+export type StandingsMode = "provider" | "simulated";
+
+export function resolveStandingsMode(
+  rowCount: number,
+  providerBacked = true,
+): StandingsMode {
+  return providerBacked && rowCount > 0 ? "provider" : "simulated";
+}
+
+/**
+ * Single source of truth for standings captions/notes. The simulated mode is
+ * always labelled as demo data — even while the runtime reports live — so the
+ * fallback table can never be mistaken for provider output.
+ */
+export function standingsTableCopy(mode: StandingsMode): {
+  caption: string;
+  note: string;
+} {
+  if (mode === "provider") {
+    return {
+      caption: "Season 2025 · provider-synced table · labelled by runtime",
+      note: "Rows come from the verified standings snapshot · arrows show reorder since last sync",
+    };
+  }
+  return {
+    caption: "Season 25/26 · simulated league · demo data",
+    note: "Simulated standings · fictional clubs · always demo data",
+  };
 }
 
 // ---------------------------------------------------------------------------

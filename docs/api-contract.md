@@ -68,6 +68,9 @@ Errors use a common envelope with `code`, HTTP `status`, safe `message`,
 ```
 
 The exact fixture values may differ; this example documents the structure.
+`stats.minutesPlayed` is an integer when the source publishes minutes and
+explicitly `null` when it does not; unavailable minutes are never converted
+to zero.
 
 ## Demo/operator mutations
 

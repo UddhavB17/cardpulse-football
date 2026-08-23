@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BrightDataApiError,
@@ -282,5 +282,213 @@ describe("runtime selection and live collection", () => {
     expect(collect).toHaveBeenCalledTimes(3);
     expect(coordinator.getHealingState("openligadb")).toBe("recovered");
     expect(coordinator.getIncident("openligadb")?.collectorId).toBe("c_exact");
+  });
+});
+
+describe("StatBunker source profile end-to-end", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function statBunkerSpecRow(
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      player_name: "Finn Krüger",
+      player_url:
+        "https://www.statbunker.com/players/getPlayerStats?player_id=9000000001",
+      team_name: "Rheinland FC 04",
+      position: "forward",
+      appearances: 33,
+      goals: 18,
+      assists: 5,
+      yellow_cards: 3,
+      second_yellow_cards: 1,
+      red_cards: 2,
+      minutes_played: 2820,
+      nationality: "Germany",
+      season: "2025",
+      source_url:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      ...overrides,
+    };
+  }
+
+  it("routes statbunker sources through the fail-closed row boundary in live mode", async () => {
+    const runtime = createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
+      BRIGHT_DATA_COLLECTOR_ID: "c_stat_e2e",
+      BRIGHT_DATA_TARGET_URL:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      CARDPULSE_SOURCE_ID: "statbunker-football-public",
+    });
+    expect(runtime.mode).toBe("live");
+
+    const brokenRow = { player_url: "https://www.statbunker.com/x" };
+    const mockFetch = vi.fn((url: string) => {
+      if (url.includes("/dca/trigger")) {
+        expect(url).toContain("collector=c_stat_e2e");
+        return Promise.resolve(
+          new Response(JSON.stringify({ collection_id: "j_stat_e2e" }), {
+            status: 200,
+          }),
+        );
+      }
+      if (url.includes("/dca/dataset?id=j_stat_e2e")) {
+        return Promise.resolve(
+          new Response(JSON.stringify([statBunkerSpecRow(), brokenRow]), {
+            status: 200,
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unknown URL: ${url}`));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const summary = await runConfiguredCollection(runtime, {
+      enableHealing: false,
+    });
+
+    expect(summary.sourceId).toBe("statbunker-football-public");
+    expect(summary.collectorId).toBe("c_stat_e2e");
+    // The spec-shaped row is accepted; the structurally broken row is
+    // quarantined with its issues instead of corrupting the card.
+    expect(summary.validRecordCount).toBe(1);
+    expect(summary.quarantinedCount).toBe(1);
+    expect(summary.sampleEntityIds).toEqual([
+      "statbunker-football-public:9000000001",
+    ]);
+    expect(summary.outcomes).toEqual(["accepted", "quarantined"]);
+
+    const snapshots = runtime.pipeline.snapshots.list(
+      "statbunker-football-public:9000000001",
+    );
+    expect(snapshots).toHaveLength(1);
+    const record = snapshots[0]?.record;
+    expect(record).toMatchObject({
+      entityType: "player",
+      sourceId: "statbunker-football-public",
+      externalId: "9000000001",
+      playerName: "Finn Krüger",
+      season: "2025",
+    });
+    if (record?.entityType === "player") {
+      // Discipline canon for this source: straight reds + second yellows.
+      expect(record.stats.redCards).toBe(3);
+      expect(record.team.teamId).toBe(
+        "statbunker-football-public:rheinland-fc-04",
+      );
+    }
+
+    const quarantines = runtime.pipeline.quarantines.listBySource(
+      "statbunker-football-public",
+    );
+    expect(quarantines).toHaveLength(1);
+    expect(quarantines[0]?.issues.length).toBeGreaterThan(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps non-statbunker sources on the neutral generic mapper path", () => {
+    // Mock mode never constructs a provider; live selection is exercised by
+    // matching logic plus the e2e test above.
+    expect(createRuntimeFromEnv({}).mode).toBe("mock");
+  });
+});
+
+describe("StatBunker profile env wiring", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function specRowFor(
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      player_name: "Finn Krüger",
+      player_url:
+        "https://www.statbunker.com/players/getPlayerStats?player_id=9000000001",
+      team_name: "Rheinland FC 04",
+      position: "forward",
+      appearances: 33,
+      goals: 18,
+      assists: 5,
+      yellow_cards: 3,
+      second_yellow_cards: 1,
+      red_cards: 2,
+      minutes_played: 2820,
+      nationality: "Germany",
+      season: "2025/26",
+      source_url:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      ...overrides,
+    };
+  }
+
+  it("applies the standardized default source id and keeps mock mode safe", () => {
+    const runtime = createRuntimeFromEnv({
+      CARDPULSE_SOURCE_PROFILE: "statbunker",
+    });
+    expect(runtime.mode).toBe("mock");
+    expect(runtime.sourceId).toBe("statbunker-epl-2025-26");
+    expect(runtime.collectionProvider).toBeNull();
+    expect(runtime.collectorId).toBeNull();
+    expect(runtime.configurationIssues).toContain(
+      "BRIGHT_DATA_API_TOKEN is not configured",
+    );
+    expect(JSON.stringify(runtime)).not.toContain("epl-2025-26:9000000001");
+  });
+
+  it("routes the statbunker profile boundary even when the source id is overridden", async () => {
+    const runtime = createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
+      BRIGHT_DATA_COLLECTOR_ID: "c_prof_e2e",
+      BRIGHT_DATA_TARGET_URL:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+      CARDPULSE_SOURCE_PROFILE: "statbunker",
+      CARDPULSE_SOURCE_ID: "epl-custom",
+    });
+    expect(runtime.mode).toBe("live");
+
+    const mockFetch = vi.fn((url: string) => {
+      if (url.includes("/dca/trigger")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ collection_id: "j_prof_e2e" }), {
+            status: 200,
+          }),
+        );
+      }
+      if (url.includes("/dca/dataset?id=j_prof_e2e")) {
+        return Promise.resolve(
+          new Response(JSON.stringify([specRowFor()]), { status: 200 }),
+        );
+      }
+      return Promise.reject(new Error(`Unknown URL: ${url}`));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const summary = await runConfiguredCollection(runtime, {
+      enableHealing: false,
+    });
+    expect(summary.success).toBe(true);
+    expect(summary.validRecordCount).toBe(1);
+    // Profile-based routing, not source-id matching, engaged the boundary.
+    expect(summary.sampleEntityIds).toEqual(["epl-custom:9000000001"]);
+  });
+
+  it("flags unrecognized profiles while keeping generic defaults", () => {
+    const runtime = createRuntimeFromEnv({
+      BRIGHT_DATA_API_TOKEN: "secret-never-serialize",
+      BRIGHT_DATA_COLLECTOR_ID: "c_prof_x",
+      BRIGHT_DATA_TARGET_URL: "https://example.football.test/players",
+      CARDPULSE_SOURCE_PROFILE: "statbunkr",
+    });
+    expect(runtime.mode).toBe("live");
+    expect(runtime.sourceId).toBe("openligadb");
+    expect(runtime.configurationIssues).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("not a recognized source profile"),
+      ]),
+    );
   });
 });

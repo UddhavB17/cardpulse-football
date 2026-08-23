@@ -11,9 +11,11 @@ record, preserve the last verified card during layout drift, repair the **same**
 Bright Data Scraper Studio collector, require a valid preview and human
 approval, rerun it, and show evidence of recovery.
 
-The default local experience is a deterministic, clearly labelled mock. A live
-Bright Data path is implemented but is not claimed as proven until a
-credentialed run has been captured.
+The default local experience is a deterministic, clearly labelled mock. The
+Bright Data provider path now has a redacted credentialed trail: real failure,
+rejected invalid preview, corrected same-ID repair, approval, 10-row rerun, and
+10/10 CardPulse mapping. A deployed browser/API live-mode recording remains
+outstanding.
 
 ## Why this is not just another stats dashboard
 
@@ -75,14 +77,19 @@ CardPulse Football.
 
 ## Hackathon submission artifacts
 
-- [Example structured player output](examples/structured-output.json)
+- [Example StatBunker-shaped collector output](examples/structured-output.json)
+  (illustrative shape; not captured from a live run)
+- [StatBunker collector spec and Scraper Studio prompts](scrapers/statbunker/README.md)
+- [Terminal-first StatBunker live runbook](docs/statbunker-live-runbook.md)
 - [One-minute demo runbook](docs/demo-runbook.md)
 - [Live Scraper Studio evidence checklist](evidence/README.md)
+- [Redacted real first-run failure evidence](evidence/live/statbunker-first-run-failure.redacted.json)
+- [Redacted successful same-ID recovery evidence](evidence/live/statbunker-same-id-recovery.redacted.json)
 - Public repository: <https://github.com/UddhavB17/cardpulse-football>
 
-The demo video URL and redacted live `c_*` evidence must be added before the
-submission form is filed. They are intentionally not represented as complete
-until those artifacts exist.
+The repository now contains redacted successful same-`c_*` provider and mapper
+evidence. A deployed live API/browser recording and final demo video URL must
+still be added before the submission form is filed.
 
 ## Run locally
 
@@ -155,6 +162,17 @@ under the [Open Database License (ODbL)](https://www.openligadb.de/lizenz).
 CardPulse does not redistribute third-party player photos, club crests, league
 marks, or an OpenLigaDB data dump.
 
+[StatBunker](https://www.statbunker.com/) is a public HTML statistics site
+targeted by the collector spec in
+[`scrapers/statbunker/`](scrapers/statbunker/README.md). Public reachability
+is a technical fact, not a license: its terms must be checked before any live
+run, robots-friendly pages still deserve a low request rate (one manual
+collector run at a time, no schedules), and any 403 or 429 means stop. The
+spec collects only public statistical fields — never images, crests, player
+photos, or account/login pages. No StatBunker data is redistributed through
+this repository; the local fixtures remain fictional,
+OpenLigaDB-inspired demo data only.
+
 Before adding another real source, verify its terms, robots policy, rate limits,
 and redistribution rights. Keep source adapters isolated so one site's layout
 or policy does not contaminate the canonical football model.
@@ -187,8 +205,11 @@ pnpm --filter @bidsentinel/brightdata test
   strict validation, baseline preservation, minority-row safety, initial-empty
   safety, batch drift detection, quarantine, valid-preview-only approval,
   same-ID resume/poll/rerun evidence, API contracts, and UI state logic.
-- **Still required before a live claim:** one redacted credentialed Bright Data
-  baseline → drift → refactor preview → approval → same-ID recovery capture.
+- **Externally verified:** one credentialed Bright Data failure → invalid
+  preview rejection → corrected refactor preview → approval → 10-row same-ID
+  rerun, followed by 10/10 canonical mapper acceptance.
+- **Still required before the final deployed claim:** one browser/API
+  live-mode capture and the submission demo video.
 
 That distinction is deliberate: mock mode proves deterministic product
 behavior; only external evidence can prove the provider account path.

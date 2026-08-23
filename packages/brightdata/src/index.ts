@@ -23,6 +23,20 @@ export interface FootballCollectionProvider {
   collect(request: FootballCollectionRequest): Promise<FootballCollectionBatch>;
 }
 
+/**
+ * Source-profile-specific mapping boundary applied to each raw dataset row
+ * before payloads enter the pipeline. The default is the domain-neutral
+ * generic mapper; named profiles such as StatBunker plug in their own
+ * boundary without changing transport behavior. A mapper returns either a
+ * canonical record it fully validated or the untouched raw row so the strict
+ * pipeline keeps owning quarantine and drift signals.
+ */
+export type BrightDataRowMapper = (
+  row: unknown,
+  sourceId: string,
+  observedAt: string,
+) => unknown;
+
 export interface CanonicalFootballRecordSink {
   accept(record: FootballRecord): Promise<void>;
 }
@@ -79,6 +93,11 @@ export class UnconfiguredBrightDataProvider implements FootballCollectionProvide
 export interface BrightDataCollectionProviderOptions {
   apiToken?: string;
   collectorId?: string;
+  /**
+   * Optional source-profile row mapper (e.g. StatBunker). Applied to every
+   * raw dataset row before generic canonical mapping.
+   */
+  rowMapper?: BrightDataRowMapper;
   pollingIntervalMs?: number;
   timeoutMs?: number;
   requestTimeoutMs?: number;
@@ -92,6 +111,7 @@ export interface BrightDataCollectionProviderOptions {
 export class BrightDataCollectionProvider implements FootballCollectionProvider {
   private readonly apiToken: string;
   private readonly collectorId: string;
+  private readonly rowMapper: BrightDataRowMapper | null;
   private readonly pollingIntervalMs: number;
   private readonly timeoutMs: number;
   private readonly requestTimeoutMs: number;
@@ -105,12 +125,18 @@ export class BrightDataCollectionProvider implements FootballCollectionProvider 
     this.apiToken = options.apiToken || process.env.BRIGHT_DATA_API_TOKEN || "";
     this.collectorId =
       options.collectorId || process.env.BRIGHT_DATA_COLLECTOR_ID || "";
+    this.rowMapper = options.rowMapper ?? null;
     this.pollingIntervalMs = options.pollingIntervalMs ?? 5000;
     this.timeoutMs = options.timeoutMs ?? 120000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30000;
     this.maxRetries = options.maxRetries ?? 3;
     this.retryDelayMs = options.retryDelayMs ?? 1000;
-    this.fetchFn = options.fetchFn ?? fetch;
+    this.fetchFn =
+      options.fetchFn ??
+      // Late-binding wrapper: resolving the global at call time keeps
+      // injected-free usage working even when the provider was constructed
+      // before a test or runtime replaced the global fetch implementation.
+      ((input, init) => globalThis.fetch(input, init));
     this.sleepFn =
       options.sleepFn ??
       ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
@@ -157,9 +183,13 @@ export class BrightDataCollectionProvider implements FootballCollectionProvider 
 
     const rawRows = await this.pollDataset(collectionId);
     const receivedAt = new Date().toISOString();
-    const payloads = rawRows.map((row) =>
-      mapRawRowToFootballRecord(row, request.sourceId, receivedAt),
-    );
+    const payloads = rawRows.map((row) => {
+      const mapped =
+        this.rowMapper === null
+          ? row
+          : this.rowMapper(row, request.sourceId, receivedAt);
+      return mapRawRowToFootballRecord(mapped, request.sourceId, receivedAt);
+    });
 
     return {
       sourceId: request.sourceId,
@@ -850,3 +880,27 @@ export class MockBrightDataHealingProvider implements FootballHealingProvider {
     this.status = approve ? "done" : "rejected";
   }
 }
+
+export {
+  DEFAULT_STATBUNKER_SOURCE_ID,
+  STATBUNKER_SOURCE_ID,
+  STATBUNKER_SOURCE_PROFILE,
+  StatBunkerRowMapper,
+  createStatBunkerPipelineRowMapper,
+  externalIdFromStatBunkerUrl,
+  mapStatBunkerRowToFootballRecord,
+  normalizeStatBunkerCountryCode,
+  normalizeStatBunkerPosition,
+  normalizeStatBunkerSeason,
+  preprocessStatBunkerRow,
+  statBunkerExternalId,
+  statBunkerSourceAdapter,
+  statBunkerSourceIdMatches,
+} from "./statbunker.js";
+export type {
+  StatBunkerMappedBatch,
+  StatBunkerMappedRowRejection,
+  StatBunkerRowIssue,
+  StatBunkerRowIssueCode,
+  StatBunkerRowOutcome,
+} from "./statbunker.js";
