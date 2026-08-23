@@ -32,6 +32,30 @@ Open:
 Chaos modes are `baseline-table`, `drift-cards`, `amended-stats`, and
 `unavailable`.
 
+## Searchable card flow
+
+With the three processes up, the explicit **Use demo data** path works in mock
+mode with zero provider calls. A new API process has an empty live index until
+an authorized refresh:
+
+```bash
+curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data' # [] before refresh
+curl -s http://127.0.0.1:4321/api/seasons | jq '[.data[].compId]'   # 745, 596, 776, 791
+```
+
+Search reads a local cached index. In live mode, open **Live operator setup**
+in the browser and explicitly refresh one verified season before searching;
+the refresh and a stale/missing generation are protected billable mutations.
+Generation collects the selected player's verified `SeasonMatches` page. If
+the standings index has no numeric player link, the same one-run collector
+starts at the public exact-name search URL, proves one numeric ID, and then
+extracts the canonical match table;
+after StatBunker publishes a completed match, the next explicit Generate after
+the 15-minute TTL recalculates the card. There is no background polling.
+Unknown seasons fail closed. See
+[the searchable card demo guide](searchable-card-demo.md) for the full flow,
+truth boundaries, and test matrix.
+
 ## Environment variables
 
 ```dotenv

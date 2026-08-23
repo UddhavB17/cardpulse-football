@@ -222,6 +222,29 @@ grep -rhoE 'c_[A-Za-z0-9_-]+' "$TMPDIR"/cardpulse-statbunker-*.json | sort -u
 # after redaction this must show exactly ONE partially masked ID everywhere
 ```
 
+### Step 7a — Searchable-card same-ID refactor
+
+Before recording the searchable player-card flow, refactor the same collector
+with the current dual-mode prompt (this is a separate billable/mutating action
+and still requires explicit approval):
+
+```bash
+bdata scraper heal "$BRIGHT_DATA_COLLECTOR_ID" \
+  "$(cat scrapers/statbunker/searchable-card-refactor-prompt.txt)" \
+  --url "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776" \
+  > "$TMPDIR/cardpulse-searchable-refactor.json"
+```
+
+Review a non-empty `PlayerStandings` preview whose rows carry the input
+`comp_id`'s mapped season, then explicitly approve the same `c_*` collector.
+After approval, the cold Erling Haaland path needs two deliberately authorized
+collections: one full season-index refresh, then one Generate run whose input
+is the exact-name `/usual/search` URL and whose output rows all repeat the same
+numeric player ID and canonical `SeasonMatches` source URL. A warm/stale later
+Generate uses that cached numeric ID directly. Do not claim that the refactor
+preview proves both branches; the narrow post-approval resolver run is the
+observable check for the second branch.
+
 ## Step 8 — Redact and file evidence
 
 ```bash

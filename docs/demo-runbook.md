@@ -1,36 +1,82 @@
-# CardPulse Football judge demo
+# CardPulse Football judge runbook
 
-## One-minute story
+Concise demo path: search Erling Haaland → choose season → generate → inspect
+front/back card → prove reliability. Every claim stays within the evidence
+boundaries in [the searchable card guide](searchable-card-demo.md).
 
-Start the chaos source, API, and web app before the timer. Open
-`http://127.0.0.1:4173`.
+## Before judges arrive
 
-| Time      | Action                                        | Narration                                                                                                  |
-| --------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| 0:00–0:08 | Point to the `Mock Demo` badge and empty card | “This path is deterministic evidence. I will not pretend it is a live provider call.”                      |
-| 0:08–0:18 | **Generate card**                             | “Football rows become a contract-validated player card, teams, and standings — with source provenance.”    |
-| 0:18–0:28 | **Inject layout drift**                       | “The source changes from a table to cards. Broken output is quarantined; the verified card stays visible.” |
-| 0:28–0:38 | **Fetch repair preview**                      | “Confirmed drift already requested repair of the same `c_*` collector; now its approval preview arrives.”  |
-| 0:38–0:47 | **Validate preview**                          | “No approval button exists until every preview row passes the frozen schema and count gate.”               |
-| 0:47–0:55 | **Approve repair**                            | “The collector resumes, reaches `done`, reruns, and records hashes and counts as recovery evidence.”       |
-| 0:55–1:00 | Point to recovered card and change ledger     | “Now a real stat amendment is accepted — layout drift and football change are different events.”           |
+Three terminals:
 
-Closing line: “The card gets attention; the verifiable self-healing scraper is
-why you can trust it.”
+```bash
+pnpm dev:chaos-source   # http://127.0.0.1:4311/players
+pnpm start:api          # http://127.0.0.1:4321
+pnpm dev:web            # http://127.0.0.1:4173
+```
 
-## Live evidence checklist
+Verify expected states:
 
-Do not claim live Bright Data proof until all of these are captured:
+```bash
+curl -s http://127.0.0.1:4321/api/runtime | jq '.mode, .sourceId'
+# expect: "mock" (no credentials) — no external request or billable mutation
 
-- a real Scraper Studio `c_*` collector targeting the deployed `/players` HTML;
-- a redacted baseline job and dataset;
-- `baseline-table` → `drift-cards` at the same stable URL;
-- the refactor request, structured preview, schema-valid gate, and human
-  approval;
-- terminal `done` and a successful rerun of the same redacted `c_*` ID;
-- `amended-stats` producing a football change event;
-- `pnpm check` passing immediately before the recording.
+curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data'
+# safe before a live refresh: [] in a new process; the query itself never bills
 
-Keep API and operator tokens out of the recording, source control, and logs.
-Until this trail exists, say “live path implemented; deterministic mock path
-verified.”
+curl -s http://127.0.0.1:4321/api/seasons | jq '[.data[].compId]'
+# expect: 745, 596, 776, 791 only
+
+curl -s "http://127.0.0.1:4321/api/seasons" | jq '.data[] | select(.season == "2022")'
+# unknown season probe: no such entry; generation for it fails closed
+```
+
+Full gate before recording anything:
+
+```bash
+pnpm check              # lint + typecheck + tests + builds + collector demo
+```
+
+Do not claim test results until the orchestrator has run this on the merged
+branch.
+
+## Two-minute story
+
+Open `http://127.0.0.1:4173`.
+
+For a zero-cost rehearsal, choose **Use demo data** first, search Haaland, and
+generate the clearly stamped demo card; it never contacts Bright Data. For an
+approved live rehearsal, open **Live operator setup**, enter the token (tab
+memory only), select the registry season, and explicitly refresh the local
+index once before beginning the timed path. That refresh is billable; never
+run it without account-holder approval.
+
+| Time      | Action                                                      | What to say                                                                                                                                             |
+| --------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0:00–0:15 | Type “Haaland” into search                                  | “Search runs over a local cached index — typing never costs a provider call.”                                                                           |
+| 0:15–0:30 | Pick a verified season, press generate                      | “Only registry seasons are offered. Generate either serves a validated snapshot from cache or starts one real Bright Data collection — and says which.” |
+| 0:30–0:45 | Watch run status → card                                     | “Stages are reported truthfully end to end; if any stage failed you would see exactly that stage, not a fake success.”                                  |
+| 0:45–1:05 | Flip the card, generate a second season                     | “The back is validated match and goal history. Explicit flip works by keyboard and touch; each season keeps separate provenance.”                       |
+| 1:05–1:25 | Switch chaos source to `drift-cards`, regenerate against it | “Layout drift is quarantined. The last verified card stays on screen; failure never becomes demo data.”                                                 |
+| 1:25–1:50 | Fetch repair preview → validate → approve                   | “Same collector ID refactored, preview gated on schema and counts, human approval required, then rerun to recovery evidence.”                           |
+| 1:50–2:00 | Point at `DEMO DATA` / provenance labels                    | “Demo data needs an explicit action and keeps its label forever. That honesty is the product.”                                                          |
+
+Failure messaging to show deliberately (optional, 30 s):
+
+- `unavailable` chaos mode → UI keeps the verified card and reports the source
+  as unavailable;
+- unknown season query → closed rejection, no collection attempted;
+- blank credentials → runtime says `mock`; billable routes refuse without the
+  mutation flag and operator token.
+
+## Evidence boundaries (say it before a judge asks)
+
+- Proven real externally: the earlier 10-row StatBunker same-collector repair
+  trail (failure → invalid preview rejected → corrected preview → approval →
+  rerun → 10/10 mapping). Nothing more.
+- The single narrow paid Erling Haaland smoke test is **gated on explicit
+  approval and has not run**.
+- No browser/on-demand live capture of the searchable flow exists yet.
+
+Keep API and operator tokens out of recordings, screenshots, and shell
+history. Until new captures exist, say: “live path implemented; deterministic
+mock path verified.”
