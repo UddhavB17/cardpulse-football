@@ -565,6 +565,69 @@ describe("generation, freshness, and single-collection guarantee", () => {
     expect(collector.collect).toHaveBeenCalledTimes(2);
   });
 
+  it("proves identity from live Bright Data wrapping, not only exact source_url stamps", async () => {
+    const indexed = snapshotForRow(statBunkerRow({ player_url: null }));
+    if (indexed.record.entityType !== "player") {
+      throw new Error("expected player fixture");
+    }
+    const collector = makeCollector([
+      { error: null, input: { url: SEARCH_URL_776 } },
+      resolvedStatBunkerMatchRow({
+        resolved_player_id: 60023,
+        source_url: SEARCH_URL_776,
+        input: { url: SEARCH_URL_776 },
+      }),
+      statBunkerMatchRow({
+        goals: 1,
+        assists: 0,
+        played_on: "16 Aug 2025",
+      }),
+    ]);
+    const service = makeService(collector.collect);
+    service.indexPlayers([indexed]);
+
+    const result = await service.generate({
+      schemaVersion: 1,
+      playerId: indexed.record.playerId,
+      season: "2025",
+    });
+    expect(result).toMatchObject({
+      outcome: "collected",
+      cardBundle: {
+        provenance: { sourceUrl: RESOLVED_MATCH_URL_776 },
+        stats: { goals: 3, assists: 1 },
+      },
+    });
+  });
+
+  it("does not treat one Bright Data envelope row as majority match drift", async () => {
+    const indexed = snapshotForRow(statBunkerRow({ player_url: null }));
+    if (indexed.record.entityType !== "player") {
+      throw new Error("expected player fixture");
+    }
+    const collector = makeCollector([
+      {
+        error: null,
+        timestamp: "2026-08-23T09:00:00.000Z",
+        input: { url: SEARCH_URL_776 },
+      },
+      resolvedStatBunkerMatchRow({
+        source_url: SEARCH_URL_776,
+        input: { url: SEARCH_URL_776 },
+      }),
+    ]);
+    const service = makeService(collector.collect);
+    service.indexPlayers([indexed]);
+
+    const result = await service.generate({
+      schemaVersion: 1,
+      playerId: indexed.record.playerId,
+      season: "2025",
+    });
+    expect(result.outcome).toBe("collected");
+    expect(result.cardBundle?.stats.goals).toBe(2);
+  });
+
   it("fails closed when resolver rows do not prove one exact identity", async () => {
     const indexed = snapshotForRow(statBunkerRow({ player_url: null }));
     if (indexed.record.entityType !== "player") {

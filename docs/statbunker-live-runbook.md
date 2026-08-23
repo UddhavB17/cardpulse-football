@@ -99,7 +99,7 @@ set -a; source .env; set +a    # load without printing values
 OUT="$TMPDIR/cardpulse-statbunker-baseline.json"
 bdata scraper run "$BRIGHT_DATA_COLLECTOR_ID" "$BRIGHT_DATA_TARGET_URL" --pretty > "$OUT"
 
-jq 'length' "$OUT"                                   # expect 10
+jq 'length' "$OUT"                                   # pre-refactor: 10; post searchable-card refactor (776): ~679 (~319 for 791)
 jq '.[0] | keys' "$OUT"                              # stable provider shape
 jq '[.[] | has("input")] | all' "$OUT"              # provider provenance
 jq '[.[].red_cards == 0] | all' "$OUT"               # zeros preserved as numbers
@@ -199,7 +199,7 @@ bdata scraper approve "$BRIGHT_DATA_COLLECTOR_ID" --auto-save --url "$BRIGHT_DAT
 # 4) Rerun the SAME collector and confirm recovery:
 bdata scraper run "$BRIGHT_DATA_COLLECTOR_ID" "$BRIGHT_DATA_TARGET_URL" --pretty \
   > "$TMPDIR/cardpulse-statbunker-postheal.json"
-jq 'length' "$TMPDIR/cardpulse-statbunker-postheal.json"   # 10 healthy rows again
+jq 'length' "$TMPDIR/cardpulse-statbunker-postheal.json"   # legacy 10-row heal: 10; searchable refactor: ~679 for comp_id=776
 jq '[.[] | select(has("error") or has("error_code"))] | length' "$TMPDIR/cardpulse-statbunker-postheal.json" # 0
 ```
 
@@ -246,6 +246,49 @@ numeric player ID and canonical `SeasonMatches` source URL. A warm/stale later
 Generate uses that cached numeric ID directly. Do not claim that the refactor
 preview proves both branches; the narrow post-approval resolver run is the
 observable check for the second branch.
+
+Expected row counts after approval (one HTML page, no pagination):
+
+| Season  | `comp_id` | Approx. rows |
+| ------- | --------: | -----------: |
+| 2023/24 |       745 |          ~700 |
+| 2024/25 |       596 |          ~700 |
+| 2025/26 |       776 |      **~679** |
+| 2026/27 |       791 |      **~319** |
+
+One approved collector handles every registry season: pass the matching
+`PlayerStandings?comp_id=…` URL per refresh.
+
+### Step 7b — Automated apply script (local)
+
+When `.env` contains `BRIGHT_DATA_API_TOKEN` and `BRIGHT_DATA_COLLECTOR_ID`:
+
+```bash
+set -a; source .env; set +a
+node scrapers/statbunker/apply-searchable-refactor.mjs
+```
+
+This runs heal → approve → verify on `comp_id=776`, then spot-checks the other
+registry seasons. Billable.
+
+### Step 7c — When CLI approve fails
+
+If `bdata scraper approve --auto-save` returns `failed` or `400 Invalid ide
+automation`:
+
+1. Open the collector from heal JSON `view_url`, e.g.
+   `https://brightdata.com/cp/scrapers/c_…`
+2. Find the pending **refactor / automation** job (collector detail page, not
+   always the main scrapers list).
+3. Review the **2-step** diff and click **Approve & save** in the UI.
+4. Rerun:
+
+```bash
+bdata scraper run "$BRIGHT_DATA_COLLECTOR_ID" \
+  "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776" --pretty \
+  | tee "$TMPDIR/post-refactor.json"
+jq 'length' "$TMPDIR/post-refactor.json"   # expect ~679
+```
 
 ## Step 8 — Redact and file evidence
 

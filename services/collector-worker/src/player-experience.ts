@@ -39,6 +39,8 @@ import {
   StatBunkerRowMapper,
   alignStandingsRowToVerifiedSeason,
   listVerifiedStatBunkerSeasons,
+  resolveStatBunkerMatchIdentity,
+  looksLikeStatBunkerMatchRow,
   resolveVerifiedStatBunkerSeason,
   statBunkerPlayerSearchResolverUrl,
   statBunkerPlayerSeasonMatchesUrl,
@@ -216,92 +218,6 @@ function sanitizeCollectorTokens(value: string): string {
 
 function iso(date: Date): string {
   return date.toISOString();
-}
-
-function recordOf(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function firstText(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): string | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-    if (typeof value === "number" && Number.isSafeInteger(value)) {
-      return String(value);
-    }
-  }
-  return null;
-}
-
-interface ResolvedMatchIdentity {
-  readonly playerExternalId: string;
-  readonly sourceUrl: string;
-}
-
-/**
- * Resolve a numeric StatBunker player ID only from explicit collector output
- * produced by the public exact-name search page. Every row must repeat the
- * same identity and canonical SeasonMatches URL; mixed/ambiguous output fails.
- */
-function resolveMatchIdentityFromRows(
-  rows: readonly unknown[],
-  playerName: string,
-  compId: number,
-): ResolvedMatchIdentity | null {
-  if (rows.length === 0) return null;
-  const identities = rows.map((row) => {
-    const record = recordOf(row);
-    if (record === null) return null;
-    const resolvedName = firstText(record, [
-      "resolved_player_name",
-      "resolvedPlayerName",
-    ]);
-    if (
-      resolvedName === null ||
-      normalizeForSearch(resolvedName) !== normalizeForSearch(playerName)
-    ) {
-      return null;
-    }
-    const externalId = firstText(record, [
-      "resolved_player_id",
-      "resolvedPlayerId",
-    ]);
-    const playerUrl = firstText(record, [
-      "resolved_player_url",
-      "resolvedPlayerUrl",
-    ]);
-    if (
-      externalId === null ||
-      !/^\d+$/.test(externalId) ||
-      playerUrl !==
-        `https://www.statbunker.com/players/getPlayerStats?player_id=${externalId}`
-    ) {
-      return null;
-    }
-    const sourceUrl = firstText(record, ["source_url", "sourceUrl"]);
-    const expectedSourceUrl = statBunkerPlayerSeasonMatchesUrl(
-      compId,
-      externalId,
-    );
-    if (sourceUrl !== expectedSourceUrl) return null;
-    return { playerExternalId: externalId, sourceUrl: expectedSourceUrl };
-  });
-  if (identities.some((identity) => identity === null)) return null;
-  const first = identities[0];
-  if (first === null || first === undefined) return null;
-  return identities.every(
-    (identity) =>
-      identity !== null &&
-      identity.playerExternalId === first.playerExternalId &&
-      identity.sourceUrl === first.sourceUrl,
-  )
-    ? first
-    : null;
 }
 
 /**
@@ -838,7 +754,7 @@ export class PlayerExperienceService {
       `${STATBUNKER_PLAYER_SEARCH_BASE_URL}?`,
     );
     const matchIdentity = resolverTarget
-      ? resolveMatchIdentityFromRows(
+      ? resolveStatBunkerMatchIdentity(
           batch.rawRows,
           seasonProfile.playerName,
           seasonMeta.compId,
@@ -861,7 +777,9 @@ export class PlayerExperienceService {
       }
     }
     const matchMapper = new StatBunkerMatchRowMapper(collectionSourceId);
-    const mappedMatches = batch.rawRows.map((rawRow) => ({
+    const matchRows = batch.rawRows.filter(looksLikeStatBunkerMatchRow);
+    const rowsToMap = matchRows.length > 0 ? matchRows : batch.rawRows;
+    const mappedMatches = rowsToMap.map((rawRow) => ({
       rawRow,
       outcome:
         matchIdentity === null
@@ -1106,7 +1024,7 @@ export class PlayerExperienceService {
             playerExternalId: context.playerExternalId,
             sourceUrl: context.sourceUrl,
           }
-        : resolveMatchIdentityFromRows(
+        : resolveStatBunkerMatchIdentity(
             previewPayloads,
             context.playerName,
             context.compId,

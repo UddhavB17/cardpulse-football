@@ -914,6 +914,11 @@ export type {
   StatBunkerMatchOutcome,
 } from "./statbunker-matches.js";
 export {
+  resolveStatBunkerMatchIdentity,
+  looksLikeStatBunkerMatchRow,
+} from "./match-identity.js";
+export type { ResolvedMatchIdentity } from "./match-identity.js";
+export {
   STATBUNKER_PLAYER_MATCHES_BASE_URL,
   STATBUNKER_PLAYER_SEARCH_BASE_URL,
   STATBUNKER_PLAYER_STANDINGS_BASE_URL,
