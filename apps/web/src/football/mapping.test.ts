@@ -88,6 +88,10 @@ describe("card front", () => {
     expect(front.seasonLabel).toBe("2025/26");
     expect(front.serialNumber).toMatch(/^CP-\d{4}\/26$/);
     expect(front.totals.minutesPlayed).toBe(1130);
+    expect(front.archetypeId).toBe("midfield-engine");
+    expect(front.archetypeTitle).toBe("Midfield Engine");
+    expect(front.archetypeSpecial).toBe(false);
+    expect(front.sourcePosition).toBe("midfielder");
     expect(front.attributes.map((a) => a.label)).toEqual([
       "GOALS",
       "ASSISTS",
@@ -115,6 +119,27 @@ describe("card front", () => {
     expect(positionDisplay("Goalkeeper")).toBe("GK");
     expect(positionDisplay(null)).toBe("—");
     expect(clubCodeFrom("West Ham United")).toBe("WES");
+  });
+
+  it("resolves curated player editions independently of position", () => {
+    const haaland = buildCardFront({
+      ...card,
+      playerId: "statbunker:player:haaland",
+      playerName: "Erling Haaland",
+      position: "forward",
+    });
+    expect(haaland.archetypeId).toBe("nordic-no-9");
+    expect(haaland.archetypeTitle).toBe("Nordic No. 9");
+    expect(haaland.archetypeSpecial).toBe(true);
+
+    const rodri = buildCardFront({
+      ...card,
+      playerId: "statbunker:player:rodri",
+      playerName: "Rodri",
+      position: "goalkeeper",
+    });
+    expect(rodri.archetypeId).toBe("midfield-architect");
+    expect(rodri.archetypeSpecial).toBe(true);
   });
 });
 

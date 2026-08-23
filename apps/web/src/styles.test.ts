@@ -60,3 +60,12 @@ describe("320px viewport support", () => {
     expect(css).toMatch(/\.season-pill[\s\S]{0,300}min-height:\s*4[2-9]px/);
   });
 });
+
+describe("archetype presentation hooks", () => {
+  it("styles the editorial title and gold special tier", () => {
+    expect(css).toContain(".archetype-title");
+    expect(css).toContain(".archetype-special");
+    expect(css).toContain('[data-archetype="special"] .archetype-title');
+    expect(css).toContain(".athlete-svg.archetype-svg");
+  });
+});
