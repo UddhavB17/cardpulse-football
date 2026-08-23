@@ -501,11 +501,7 @@ describe("stable ID collision regressions", () => {
     ];
     const batch = mapper.mapRows(rows, observedAt);
     expect(batch.records).toHaveLength(4);
-    const entityIds = new Set(
-      batch.records.map((record) =>
-        record.entityType === "player" ? record.playerId : record.teamId,
-      ),
-    );
+    const entityIds = new Set(batch.records.map(entityIdOf));
     expect(entityIds.size).toBe(4);
   });
 });
