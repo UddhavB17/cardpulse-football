@@ -14,6 +14,16 @@ export const CURRENT_SEASON: SeasonKey = "2026";
 
 export const SEASON_UNAVAILABLE_MESSAGE = "Source data not available yet.";
 
+/** Indexed season with no stored card yet — generation is the honest next step. */
+export function seasonCardMissingMessage(key: SeasonKey): string {
+  return `No card cached for ${seasonLabel(key)} yet — tap Generate live card to scrape this season.`;
+}
+
+/** Player is not in the index for this catalog season. */
+export function seasonNotIndexedMessage(key: SeasonKey): string {
+  return `${seasonLabel(key)} is not in this player's verified index — try another season or search that campaign's directory.`;
+}
+
 /** Catalog label, e.g. 2023 -> "2023/24". */
 export function seasonLabel(key: SeasonKey): string {
   return `${key}/${(Number.parseInt(key, 10) + 1) % 100}`;

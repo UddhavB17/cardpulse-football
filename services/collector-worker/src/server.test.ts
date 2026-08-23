@@ -644,6 +644,55 @@ describe("searchable player-card HTTP flow", () => {
     }
   });
 
+  it("returns only seasons an indexed player actually holds", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = [statBunkerHaalandRow()];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      await fetch(`${baseUrl}/api/player-index/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ season: "2025" }),
+      });
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      );
+      const searchBody = (await search.json()) as {
+        data: Array<{ playerId: string }>;
+      };
+      const playerId = searchBody.data[0]?.playerId;
+      expect(playerId).toBeTruthy();
+
+      const seasons = await fetch(
+        `${baseUrl}/api/players/${encodeURIComponent(playerId!)}/seasons`,
+      );
+      expect(seasons.status).toBe(200);
+      const seasonsBody = (await seasons.json()) as { data: string[] };
+      expect(seasonsBody.data).toEqual(["2025"]);
+      expect(seasonsBody.data).not.toContain("2023");
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
   it("auto-prepares club search, generates without browser credentials, then serves a cache hit", async () => {
     const runtime = liveStatBunkerRuntime();
     const collect = vi.fn(

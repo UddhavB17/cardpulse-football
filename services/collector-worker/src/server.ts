@@ -703,7 +703,7 @@ export function createRequestHandler(
         const seasons = playerExperience.getPlayerSeasons(playerId);
         if (seasons.length === 0) throw new NotFoundError("Player not found");
         sendJson(200, {
-          data: playerExperience.listSeasons().map((entry) => entry.season),
+          data: seasons,
           generatedAt,
         });
         return;

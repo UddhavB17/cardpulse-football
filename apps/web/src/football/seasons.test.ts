@@ -10,7 +10,9 @@ import {
   latestAvailableSeason,
   latestCompleteSeason,
   parseSeasonKey,
+  seasonCardMissingMessage,
   seasonLabel,
+  seasonNotIndexedMessage,
 } from "./seasons";
 
 describe("season catalog", () => {
@@ -65,6 +67,12 @@ describe("selector options", () => {
 
   it("exposes the exact unavailable-season message", () => {
     expect(SEASON_UNAVAILABLE_MESSAGE).toBe("Source data not available yet.");
+  });
+
+  it("explains missing cards vs missing index seasons distinctly", () => {
+    expect(seasonCardMissingMessage("2024")).toContain("No card cached");
+    expect(seasonCardMissingMessage("2024")).toContain("Generate live card");
+    expect(seasonNotIndexedMessage("2023")).toContain("not in this player's verified index");
   });
 });
 
