@@ -1,0 +1,667 @@
+/* ==========================================================================
+   CardPulse Football — dimensional generation effects (isolated layer)
+   Loaded AFTER style.css. Owns: generation shell, semantic glitch tiers,
+   quarantine freeze, one-shot print reveal, holographic pointer foil,
+   verified-card preservation during regeneration, reduced-motion fallbacks.
+   Never restyles the base design system; only extends it.
+   ========================================================================== */
+
+.flip-card {
+  --holo-x: 0%;
+  --holo-y: 0%;
+}
+
+/* --------------------------------------------------------------------------
+   Holographic foil layer — real element inside each face (never face::after)
+   -------------------------------------------------------------------------- */
+
+.holo-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: block;
+  overflow: hidden;
+  opacity: 0.55;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-position:
+    calc(50% + var(--holo-x)) calc(44% + var(--holo-y)),
+    calc(50% + var(--holo-x)) calc(50% + var(--holo-y)),
+    calc(50% + var(--holo-x) * 2) 0,
+    0 0;
+  background-size:
+    46% 34%,
+    260% 260%,
+    19px 26px,
+    7px 7px;
+  background-image:
+    radial-gradient(
+      closest-side,
+      rgb(255 255 255 / 62%),
+      rgb(255 255 255 / 22%) 55%,
+      transparent 100%
+    ),
+    linear-gradient(
+      115deg,
+      rgb(255 60 160 / 26%) 8%,
+      rgb(122 92 255 / 20%) 24%,
+      rgb(64 224 208 / 22%) 40%,
+      rgb(255 214 90 / 22%) 58%,
+      rgb(10 168 194 / 20%) 74%,
+      rgb(255 255 255 / 30%) 88%
+    ),
+    repeating-linear-gradient(
+      115deg,
+      transparent 0 7px,
+      rgb(255 255 255 / 16%) 7px 9px,
+      transparent 9px 17px
+    ),
+    radial-gradient(
+      circle,
+      rgb(255 255 255 / 20%) 0.9px,
+      transparent 1.1px
+    );
+}
+
+.face-back .holo-layer {
+  opacity: 0.4;
+}
+
+/* One-shot reveal also throws a single foil sweep across the fresh card. */
+.flip-card.reveal-once .holo-layer {
+  animation: holo-sweep 560ms ease-out both;
+}
+
+@keyframes holo-sweep {
+  from {
+    background-position:
+      -70% 44%,
+      -90% 50%,
+      -120px 0,
+      0 0;
+  }
+  to {
+    background-position:
+      calc(110% ) 44%,
+      160% 50%,
+      140px 0,
+      0 0;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Generation shell — semantic 5:7 press frame shown while work is in flight
+   -------------------------------------------------------------------------- */
+
+.gen-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 430px;
+  aspect-ratio: 5 / 7;
+  border: var(--border-heavy);
+  padding: 14px;
+  overflow: hidden;
+  background: var(--card-paper);
+  box-shadow: var(--shadow-hard);
+}
+
+.gen-shell.gen-companion {
+  aspect-ratio: auto;
+  min-height: 200px;
+  gap: 8px;
+}
+
+.regen-layout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+}
+
+.regen-layout .gen-shell.gen-companion {
+  width: 100%;
+}
+
+/* Assembled plates: real layers that appear as resolved milestones land */
+.gen-plates {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.gen-plate {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 300ms ease,
+    transform 300ms ease;
+}
+
+.gen-plate[data-state="assembled"] {
+  opacity: 1;
+  transform: none;
+}
+
+.plate-frame {
+  background: linear-gradient(
+    160deg,
+    var(--team-secondary, var(--paper-deep)) -20%,
+    var(--card-paper) 65%
+  );
+}
+
+.plate-art {
+  background-image:
+    radial-gradient(
+      circle at 80% 14%,
+      var(--team-accent, var(--gold)) 0 13%,
+      transparent 14%
+    ),
+    radial-gradient(circle, rgb(23 19 16 / 28%) 1.1px, transparent 1.3px);
+  background-size:
+    auto,
+    7px 7px;
+}
+
+.plate-rails {
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0 18px,
+    rgb(23 19 16 / 7%) 18px 21px
+  );
+}
+
+.plate-stats {
+  background: linear-gradient(
+    0deg,
+    transparent 0 58%,
+    rgb(30 92 58 / 14%) 58% 72%,
+    transparent 72% 82%,
+    rgb(138 93 18 / 16%) 82% 93%,
+    transparent 93%
+  );
+}
+
+.plate-foil {
+  background: linear-gradient(
+    115deg,
+    rgb(255 60 160 / 12%),
+    rgb(64 224 208 / 13%) 38%,
+    rgb(255 214 90 / 15%) 66%,
+    rgb(255 255 255 / 20%)
+  );
+}
+
+/* Chromatic ghost plates — the moving part of every glitch tier */
+.gen-ghost {
+  position: absolute;
+  inset: -3px;
+  z-index: 5;
+  border: 3px solid var(--chroma-cyan);
+  mix-blend-mode: multiply;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.gen-ghost-magenta {
+  border-color: var(--chroma-magenta);
+}
+
+/* Shell copy sits above the plates */
+.gen-head,
+.gen-body {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+}
+
+.gen-tag {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 3px 9px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.gen-shell .player-name {
+  font-size: clamp(19px, 4.6vw, 25px);
+}
+
+.gen-shell .player-meta {
+  margin: 6px 0 0;
+}
+
+.gen-step {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gen-pulse {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  background: var(--accent-red);
+  box-shadow: 0 0 0 3px rgb(194 42 32 / 22%);
+  animation: gen-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes gen-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.55);
+    opacity: 0.55;
+  }
+}
+
+.gen-reason {
+  margin: 8px 0 0;
+  border-left: 5px solid var(--accent-red);
+  padding: 6px 9px;
+  background: #f7ddd7;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gen-layers {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.gen-layers li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.plate-chip {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border: 2px solid var(--ink);
+  background: transparent;
+}
+
+.gen-layers li[data-state="assembled"] {
+  color: var(--ink);
+}
+
+.gen-layers li[data-state="assembled"] .plate-chip {
+  background: var(--pitch);
+}
+
+.gen-companion .gen-layers {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 4px 10px;
+}
+
+.gen-quarantine-note {
+  margin: 10px 0 0;
+  color: var(--accent-red-deep);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------------
+   Semantic glitch tiers — keyed to the truthful flow step, never timers
+   -------------------------------------------------------------------------- */
+
+.gen-shell[data-tier="drift"] .gen-ghost-cyan {
+  animation: drift-a 2.2s steps(2, jump-none) infinite;
+}
+
+.gen-shell[data-tier="drift"] .gen-ghost-magenta {
+  animation: drift-b 2.2s steps(2, jump-none) infinite;
+}
+
+@keyframes drift-a {
+  0%,
+  100% {
+    transform: translate(-2px, 1px);
+  }
+  50% {
+    transform: translate(2px, -1px);
+  }
+}
+
+@keyframes drift-b {
+  0%,
+  100% {
+    transform: translate(2px, -1px);
+  }
+  50% {
+    transform: translate(-2px, 1px);
+  }
+}
+
+.gen-shell[data-tier="slice"] .gen-ghost {
+  opacity: 0.6;
+}
+
+.gen-shell[data-tier="slice"] .gen-ghost-cyan {
+  clip-path: polygon(0 0, 100% 0, 100% 38%, 0 38%);
+  animation: slice-a 700ms steps(2, jump-none) infinite;
+}
+
+.gen-shell[data-tier="slice"] .gen-ghost-magenta {
+  clip-path: polygon(0 58%, 100% 58%, 100% 100%, 0 100%);
+  animation: slice-b 700ms steps(2, jump-none) infinite;
+}
+
+@keyframes slice-a {
+  0%,
+  100% {
+    transform: translate(-7px, -2px);
+  }
+  50% {
+    transform: translate(7px, 3px);
+  }
+}
+
+@keyframes slice-b {
+  0%,
+  100% {
+    transform: translate(8px, 2px);
+  }
+  50% {
+    transform: translate(-8px, -3px);
+  }
+}
+
+.gen-shell[data-tier="validate"] .gen-ghost {
+  opacity: 0.85;
+}
+
+.gen-shell[data-tier="validate"] .gen-ghost-cyan {
+  clip-path: polygon(0 0, 100% 0, 100% 26%, 0 32%);
+  animation: quake-a 320ms steps(3, jump-none) infinite;
+}
+
+.gen-shell[data-tier="validate"] .gen-ghost-magenta {
+  clip-path: polygon(0 64%, 100% 60%, 100% 100%, 0 100%);
+  animation: quake-b 260ms steps(3, jump-none) infinite reverse;
+}
+
+.gen-shell[data-tier="validate"] .gen-plates {
+  animation: quake-core 300ms steps(2, jump-none) infinite;
+}
+
+@keyframes quake-a {
+  0%,
+  100% {
+    transform: translate(-10px, 4px);
+  }
+  33% {
+    transform: translate(9px, -6px);
+  }
+  66% {
+    transform: translate(-6px, -9px);
+  }
+}
+
+@keyframes quake-b {
+  0%,
+  100% {
+    transform: translate(11px, -4px);
+  }
+  33% {
+    transform: translate(-9px, 7px);
+  }
+  66% {
+    transform: translate(7px, 9px);
+  }
+}
+
+@keyframes quake-core {
+  0%,
+  100% {
+    transform: skewX(0deg);
+  }
+  50% {
+    transform: skewX(1.6deg) scale(1.01);
+  }
+}
+
+/* Printing: every plate glides into registration and holds */
+.gen-shell[data-tier="align"] .gen-ghost {
+  opacity: 0.25;
+  animation: none;
+  transform: translate(0, 0);
+  transition:
+    opacity 400ms ease,
+    transform 450ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gen-shell[data-tier="align"] .gen-plates {
+  animation: none;
+}
+
+/* Failure: frozen incomplete shell + quarantine treatment */
+.gen-shell[data-tier="quarantine"] {
+  filter: saturate(0.3) contrast(0.95);
+}
+
+.gen-shell[data-tier="quarantine"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  border: 3px dashed var(--accent-red);
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(194 42 32 / 13%) 0 12px,
+    transparent 12px 26px
+  );
+  pointer-events: none;
+}
+
+.gen-shell[data-tier="quarantine"] .gen-ghost {
+  animation: none !important;
+  opacity: 0.5;
+}
+
+.gen-shell[data-tier="quarantine"] .gen-ghost-cyan {
+  clip-path: polygon(0 0, 100% 4%, 100% 34%, 0 30%);
+  transform: translate(-5px, 3px);
+}
+
+.gen-shell[data-tier="quarantine"] .gen-ghost-magenta {
+  clip-path: polygon(0 62%, 100% 58%, 100% 96%, 0 100%);
+  transform: translate(6px, -3px);
+}
+
+.gen-shell[data-tier="quarantine"] .gen-pulse {
+  animation: none;
+  background: var(--muted);
+  box-shadow: none;
+}
+
+.gen-shell[data-tier="quarantine"] .gen-tag {
+  background: var(--accent-red-deep);
+}
+
+/* Success: the shell is replaced by the real card; nothing keeps moving. */
+
+/* --------------------------------------------------------------------------
+   Regeneration over a verified card — the old print must never corrupt
+   -------------------------------------------------------------------------- */
+
+.card-stage.regen-hold .face-front::after,
+.card-stage.regen-hold .face-back::after {
+  content: none !important;
+  animation: none !important;
+  opacity: 0 !important;
+}
+
+.is-busy .card-stage.regen-hold .face-front::after,
+.is-busy .card-stage.regen-hold .face-back::after {
+  content: none !important;
+  animation: none !important;
+  opacity: 0 !important;
+}
+
+.verified-stamp {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  z-index: 10;
+  padding: 4px 10px;
+  border: 2px solid var(--ink);
+  background: var(--pitch);
+  color: var(--paper);
+  box-shadow: 3px 3px 0 rgb(23 19 16 / 35%);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  transform: rotate(4deg);
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------
+   One-shot reveal for a freshly printed card (plays once per print nonce)
+   -------------------------------------------------------------------------- */
+
+.flip-card.reveal-once .card-inner3d {
+  animation: cardpulse-press-align 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes cardpulse-press-align {
+  0% {
+    transform: perspective(900px) translate3d(-16px, 9px, 0) skewX(-4deg)
+      scale(1.03);
+    filter: blur(1.6px) saturate(1.6);
+    opacity: 0.65;
+  }
+  40% {
+    transform: perspective(900px) translate3d(10px, -6px, 0) skewX(2.4deg)
+      scale(1.01);
+    filter: blur(0.5px) saturate(1.2);
+    opacity: 0.9;
+  }
+  70% {
+    transform: perspective(900px) translate3d(-3px, 2px, 0) skewX(-0.8deg);
+    filter: none;
+    opacity: 1;
+  }
+  100% {
+    transform: perspective(900px);
+    filter: none;
+    opacity: 1;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Reduced motion — everything static, quiet, fully readable and operable
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .gen-shell .gen-plate,
+  .gen-ghost,
+  .holo-layer,
+  .gen-pulse {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .flip-card.reveal-once .card-inner3d,
+  .flip-card.reveal-once .holo-layer {
+    animation: none !important;
+  }
+
+  .flip-card.reveal-once .card-inner3d {
+    transform: none;
+    filter: none;
+    opacity: 1;
+  }
+
+  .gen-shell[data-tier] .gen-ghost {
+    animation: none !important;
+    opacity: 0;
+  }
+
+  .gen-shell[data-tier="quarantine"] .gen-ghost {
+    opacity: 0.5;
+  }
+
+  .gen-shell .gen-pulse {
+    animation: none !important;
+  }
+
+  .holo-layer {
+    background-position:
+      50% 44%,
+      50% 50%,
+      0 0,
+      0 0;
+  }
+
+  .gen-shell[data-tier="validate"] .gen-plates {
+    animation: none !important;
+    transform: none;
+  }
+}
+
+body.reduced-motion .flip-card.reveal-once .card-inner3d,
+body.reduced-motion .flip-card.reveal-once .holo-layer {
+  animation: none !important;
+}
+
+body.reduced-motion .gen-shell [data-state],
+body.reduced-motion .gen-ghost,
+body.reduced-motion .gen-pulse,
+body.reduced-motion .holo-layer {
+  transition: none !important;
+  animation: none !important;
+}
+
+body.reduced-motion .gen-shell[data-tier] .gen-ghost {
+  opacity: 0;
+}
+
+body.reduced-motion .gen-shell[data-tier="quarantine"] .gen-ghost {
+  opacity: 0.5;
+}
+
+body.reduced-motion .holo-layer {
+  background-position:
+    50% 44%,
+    50% 50%,
+    0 0,
+    0 0;
+}

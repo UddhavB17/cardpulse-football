@@ -21,6 +21,7 @@ import {
   initialFlowState,
   transition,
   type FlowState,
+  type RailStep,
 } from "./football/flow";
 import { buildCardBundle } from "./football/mapping";
 import type { SourceHealthSummary } from "./data-client";
@@ -63,7 +64,17 @@ import {
   pulseMarkSvg,
   warningIcon,
 } from "./football/artwork";
+import {
+  SHELL_PLATES,
+  armPrintReveal,
+  assembledPlates,
+  bindPointerEffects,
+  glitchTierFor,
+  printRevealNonce,
+  type ShellPlate,
+} from "./football/card-effects";
 import "./style.css";
+import "./card-effects.css";
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -103,6 +114,7 @@ interface AppState {
   compareNote: string | null;
   flipped: boolean;
   flow: FlowState;
+  revealNonce: string | null;
   errorMessage: string | null;
   indexRefreshing: boolean;
   indexMessage: string | null;
@@ -130,6 +142,7 @@ const state: AppState = {
   compareNote: null,
   flipped: false,
   flow: initialFlowState(),
+  revealNonce: null,
   errorMessage: null,
   indexRefreshing: false,
   indexMessage: null,
@@ -491,19 +504,15 @@ function statLine(label: string, value: number | null): string {
   }</dd></div>`;
 }
 
-function renderCardStage(): void {
-  const stage = qs("#card-stage");
-  if (stage === null) return;
-  const card = state.card;
-  if (card === null) {
-    stage.innerHTML = `<div class="card-placeholder">
-      <strong>The press is warm</strong>
-      <span>Search a player, pick a season, then generate a card.</span>
-      <span class="placeholder-hint">Cards print from observed source data — nothing here is invented.</span>
-    </div>`;
-    return;
-  }
+const GEN_PLATE_LABELS: Record<ShellPlate, string> = {
+  frame: "Frame plate",
+  art: "Artwork plate",
+  rails: "Data rails",
+  stats: "Statistic ghosts",
+  foil: "Foil seal",
+};
 
+function flipCardHtml(card: CardBundle, preserveWhilePrinting: boolean): string {
   const front = card.front;
   const back = card.back;
   const art = athleteArtworkPlan({
@@ -515,9 +524,12 @@ function renderCardStage(): void {
   const progressBadge = front.seasonInProgress
     ? `<span class="progress-badge">Season in progress</span>`
     : "";
+  const preserveNote = preserveWhilePrinting
+    ? " This verified print stays on screen while a new card prints."
+    : "";
   const cardAriaLabel = state.flipped
-    ? `Player card, ${front.playerName}. Back: season-bound match details and goal timeline. Press Enter to return to season totals.`
-    : `Player card, ${front.playerName}. Front: season totals. Press Enter to flip to match details.`;
+    ? `Player card, ${front.playerName}. Back: season-bound match details and goal timeline. Press Enter to return to season totals.${preserveNote}`
+    : `Player card, ${front.playerName}. Front: season totals. Press Enter to flip to match details.${preserveNote}`;
   const match = back.headlineMatch;
   const timeline =
     back.timeline.length > 0
@@ -530,8 +542,11 @@ function renderCardStage(): void {
       : `<p class="timeline-empty">${
           back.note ?? "No goal events recorded."
         }</p>`;
+  const stamp = preserveWhilePrinting
+    ? `<span class="verified-stamp">Last verified</span>`
+    : "";
 
-  stage.innerHTML = `
+  return `
   <article class="flip-card${state.flipped ? " flipped" : ""}" id="flip-card"
     tabindex="0" role="button" aria-roledescription="collectible card"
     data-archetype="${escapeHtml(front.archetypeSpecial ? "special" : front.archetypeId)}"
@@ -575,6 +590,7 @@ function renderCardStage(): void {
           </dl>
           <p class="verified-line">Source observed: ${escapeHtml(formatTimestamp(front.verifiedAtLabel))}</p>
         </div>
+        <span class="holo-layer" aria-hidden="true"></span>
       </div>
       <div class="face face-back">
         <header class="card-head">
@@ -602,13 +618,116 @@ function renderCardStage(): void {
           ${timeline}
           <p class="flip-hint">Use the Flip control or press Enter again to return to the totals face.</p>
         </div>
+        <span class="holo-layer" aria-hidden="true"></span>
       </div>
     </div>
+    ${stamp}
   </article>`;
+}
 
-  attachTilt(stage.querySelector<HTMLElement>("#flip-card"));
-  paintSidePanel();
-  paintDrawer();
+function genShellHtml(compact: boolean): string {
+  const generation = state.flow.generation;
+  const tier = glitchTierFor(generation);
+  const resolved =
+    generation.kind === "failed" && generation.step !== null
+      ? RAIL_STEPS.slice(0, RAIL_STEPS.indexOf(generation.step))
+      : [];
+  const plates = assembledPlates(
+    resolved.length > 0
+      ? new Set<RailStep>(resolved)
+      : completedSteps(state.flow),
+  );
+  const playerName =
+    state.card?.front.playerName ?? state.selectedHit?.playerName ?? "";
+  const clubName =
+    state.card?.front.clubName ?? state.selectedHit?.clubName ?? "";
+  const seasonText =
+    state.selectedSeason !== null ? seasonLabel(state.selectedSeason) : "";
+  const running = generation.kind === "running";
+  const stepText =
+    running || generation.kind === "failed"
+      ? `${running ? RAIL_LABELS[generation.step] : "Halted"}${
+          !running && generation.step !== null
+            ? ` at ${RAIL_LABELS[generation.step]}`
+            : ""
+        }${running ? "…" : ""}`
+      : "Press settled.";
+  const summary = running
+    ? `Printing a new ${playerName} card. Current operation: ${RAIL_LABELS[generation.step]}.`
+    : `Generation halted before printing. The incomplete press shell is quarantined; the last verified card is unaffected.`;
+  const reasonLine =
+    !running && state.errorMessage !== null
+      ? `<p class="gen-reason">${escapeHtml(state.errorMessage)}</p>`
+      : "";
+  const quarantineNote =
+    tier === "quarantine"
+      ? `<p class="gen-quarantine-note">Incomplete shell quarantined for inspection</p>`
+      : "";
+  const plateItems = SHELL_PLATES.map(
+    (plate) =>
+      `<li data-state="${plates[plate] ? "assembled" : "pending"}"><span class="plate-chip" aria-hidden="true"></span>${escapeHtml(GEN_PLATE_LABELS[plate])}</li>`,
+  ).join("");
+  const headTag = running ? "New press running" : "Press quarantined";
+  const identity = [playerName, clubName, seasonText]
+    .filter((part) => part !== "")
+    .map((part) => escapeHtml(part))
+    .join(" · ");
+
+  return `
+  <article class="gen-shell${compact ? " gen-companion" : ""}" data-tier="${tier}" role="status">
+    <span class="gen-ghost gen-ghost-cyan" aria-hidden="true"></span>
+    <span class="gen-ghost gen-ghost-magenta" aria-hidden="true"></span>
+    <div class="gen-plates" aria-hidden="true">
+      ${SHELL_PLATES.map(
+        (plate) =>
+          `<span class="gen-plate plate-${plate}" data-state="${plates[plate] ? "assembled" : "pending"}"></span>`,
+      ).join("")}
+    </div>
+    <header class="gen-head">
+      <span class="gen-tag">${headTag}</span>
+      <h3 class="player-name chromatic">${identity}</h3>
+    </header>
+    <div class="gen-body">
+      <p class="gen-step"><span class="gen-pulse" aria-hidden="true"></span>${stepText}</p>
+      <ol class="gen-layers" aria-label="Press plates assembled so far">${plateItems}</ol>
+      ${reasonLine}
+      ${quarantineNote}
+      <p class="sr-status">${escapeHtml(summary)}</p>
+    </div>
+  </article>`;
+}
+
+function renderCardStage(): void {
+  const stage = qs("#card-stage");
+  if (stage === null) return;
+  const generation = state.flow.generation;
+  const printing = generation.kind === "running";
+
+  if (state.card !== null) {
+    stage.classList.toggle("regen-hold", printing);
+    const cardMarkup = flipCardHtml(state.card, printing);
+    stage.innerHTML = printing
+      ? `<div class="regen-layout">${cardMarkup}${genShellHtml(true)}</div>`
+      : cardMarkup;
+    const cardElement = stage.querySelector<HTMLElement>("#flip-card");
+    attachTilt(cardElement);
+    armPrintReveal(cardElement, state.revealNonce, reducedMotion());
+    paintSidePanel();
+    paintDrawer();
+    return;
+  }
+
+  stage.classList.remove("regen-hold");
+  if (generation.kind === "running" || generation.kind === "failed") {
+    stage.innerHTML = genShellHtml(false);
+    return;
+  }
+
+  stage.innerHTML = `<div class="card-placeholder">
+      <strong>The press is warm</strong>
+      <span>Search a player, pick a season, then generate a card.</span>
+      <span class="placeholder-hint">Cards print from observed source data — nothing here is invented.</span>
+    </div>`;
 }
 
 function paintSidePanel(): void {
@@ -1086,6 +1205,7 @@ async function runGeneration(): Promise<void> {
     await hydrateSourceHealth(record.sourceId);
     await hydrateMatches(record);
     state.seasonMessage = null;
+    state.revealNonce = printRevealNonce(record.playerId, record.season);
     dispatch({ type: "card-printed", cardId: record.playerId });
     state.compareCard = null;
     state.compareNote = null;
@@ -1253,20 +1373,7 @@ function setFlipped(flipped: boolean): void {
 function attachTilt(card: HTMLElement | null): void {
   if (card === null) return;
   if (reducedMotion()) return;
-  card.addEventListener("pointermove", (event) => {
-    if (event.pointerType === "touch") return;
-    const rect = card.getBoundingClientRect();
-    const px = (event.clientX - rect.left) / rect.width;
-    const py = (event.clientY - rect.top) / rect.height;
-    card.classList.add("tilting");
-    card.style.setProperty("--ry", `${((px - 0.5) * 10).toFixed(2)}deg`);
-    card.style.setProperty("--rx", `${((0.5 - py) * 8).toFixed(2)}deg`);
-  });
-  card.addEventListener("pointerleave", () => {
-    card.classList.remove("tilting");
-    card.style.setProperty("--rx", "0deg");
-    card.style.setProperty("--ry", "0deg");
-  });
+  bindPointerEffects(card, reducedMotion);
 }
 
 function flipFromCardEvent(event: Event): void {
