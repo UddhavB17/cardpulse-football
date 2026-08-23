@@ -174,6 +174,11 @@ in-memory index until an explicit operator-gated season refresh; search itself
 never bills, and stale/missing generation bills only after the protected
 Generate action.
 
+For hosting, use the checked-in [Render Blueprint](render.yaml) or follow the
+[manual Render deployment settings](docs/render-deployment.md). The production
+API binds to Render's assigned port and only accepts browser requests from the
+explicitly configured frontend origin.
+
 Useful endpoints:
 
 - chaos source: `http://127.0.0.1:4311/players`

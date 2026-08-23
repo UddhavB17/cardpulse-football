@@ -14,7 +14,12 @@ import {
   validPlayerFixture,
 } from "@bidsentinel/contracts/fixtures";
 import { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { createRequestHandler } from "./server.js";
+import {
+  createRequestHandler,
+  resolveAllowedOrigins,
+  resolveServerHost,
+  resolveServerPort,
+} from "./server.js";
 import { createRuntimeFromEnv, type CardPulseRuntime } from "./runtime.js";
 
 const SOURCE_ID = "openligadb";
@@ -89,6 +94,22 @@ async function stopRuntimeServer(server: ReturnType<typeof createServer>) {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+describe("deployment configuration", () => {
+  it("preserves local binding defaults and accepts Render values", () => {
+    expect(resolveServerHost(undefined)).toBe("127.0.0.1");
+    expect(resolveServerHost(" 0.0.0.0 ")).toBe("0.0.0.0");
+    expect(resolveServerPort(undefined)).toBe(4321);
+    expect(resolveServerPort("10000")).toBe(10000);
+  });
+
+  it("fails fast for an invalid deployment origin or port", () => {
+    expect(() => resolveAllowedOrigins("https://example.com/path")).toThrow(
+      /origins without paths/,
+    );
+    expect(() => resolveServerPort("invalid")).toThrow(/PORT/);
+  });
+});
+
 describe("CardPulse Football API Server", () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
@@ -117,7 +138,11 @@ describe("CardPulse Football API Server", () => {
       liveMutationsEnabled: false,
       operatorTokenHash: null,
     };
-    const handler = createRequestHandler(pipeline, coordinator, runtime);
+    const handler = createRequestHandler(pipeline, coordinator, runtime, {
+      allowedOrigins: resolveAllowedOrigins(
+        "https://cardpulse-football-web.onrender.com",
+      ),
+    });
     server = createServer(handler);
 
     await new Promise<void>((resolve) => {
@@ -143,6 +168,21 @@ describe("CardPulse Football API Server", () => {
     };
     expect(body.data.service).toBe("cardpulse-api");
     expect(body.data.status).toBe("ok");
+  });
+
+  it("allows the configured production web origin and rejects other origins", async () => {
+    const allowed = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://cardpulse-football-web.onrender.com" },
+    });
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(
+      "https://cardpulse-football-web.onrender.com",
+    );
+    expect(allowed.headers.get("vary")).toContain("Origin");
+
+    const rejected = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://untrusted.example" },
+    });
+    expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   it("GET /api/runtime explicitly labels deterministic mock mode", async () => {

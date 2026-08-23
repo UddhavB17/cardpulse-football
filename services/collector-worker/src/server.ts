@@ -37,6 +37,66 @@ import {
 
 const MOCK_DEV_COLLECTOR_ID = "c_mock_cardpulse";
 const OPERATOR_HEADERS = ["x-cardpulse-operator-token"] as const;
+const LOCAL_ALLOWED_ORIGINS = [
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+] as const;
+
+export interface RequestHandlerOptions {
+  allowedOrigins?: ReadonlySet<string>;
+}
+
+export function resolveAllowedOrigins(
+  configuredOrigins: string | undefined,
+): ReadonlySet<string> {
+  const origins = new Set<string>(LOCAL_ALLOWED_ORIGINS);
+
+  for (const value of configuredOrigins?.split(",") ?? []) {
+    const candidate = value.trim();
+    if (candidate === "") continue;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      throw new Error(
+        `CARDPULSE_ALLOWED_ORIGINS contains an invalid origin: ${candidate}`,
+      );
+    }
+
+    const normalizedCandidate = candidate.endsWith("/")
+      ? candidate.slice(0, -1)
+      : candidate;
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.origin !== normalizedCandidate
+    ) {
+      throw new Error(
+        `CARDPULSE_ALLOWED_ORIGINS must contain only http(s) origins without paths: ${candidate}`,
+      );
+    }
+    origins.add(parsed.origin);
+  }
+
+  return origins;
+}
+
+export function resolveServerHost(configuredHost: string | undefined): string {
+  return configuredHost?.trim() || "127.0.0.1";
+}
+
+export function resolveServerPort(configuredPort: string | undefined): number {
+  if (configuredPort === undefined || configuredPort.trim() === "") return 4321;
+
+  const port = Number(configuredPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("PORT must be an integer between 1 and 65535");
+  }
+  return port;
+}
 
 class HttpError extends Error {
   constructor(
@@ -110,7 +170,11 @@ export function createRequestHandler(
   pipelineInstance: CardPulsePipeline,
   coordinatorInstance: SelfHealingCoordinator,
   runtimeInstance?: CardPulseRuntime,
+  options: RequestHandlerOptions = {},
 ) {
+  const allowedOrigins =
+    options.allowedOrigins ??
+    resolveAllowedOrigins(process.env.CARDPULSE_ALLOWED_ORIGINS);
   const activeRuntime: CardPulseRuntime =
     runtimeInstance ??
     (() => {
@@ -192,14 +256,10 @@ export function createRequestHandler(
     const requestId = `req-${randomUUID().replace(/-/g, "").substring(0, 15)}`;
 
     const origin = req.headers.origin;
-    const allowedOrigins = [
-      "http://localhost:4173",
-      "http://127.0.0.1:4173",
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-    ];
-    if (origin && allowedOrigins.includes(origin)) {
+    if (origin) {
+      res.setHeader("Vary", "Origin");
+    }
+    if (origin && allowedOrigins.has(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader(
@@ -1176,16 +1236,21 @@ async function parseJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  const parsedPort = Number.parseInt(process.env.PORT ?? "4321", 10);
-  const port = Number.isFinite(parsedPort) ? parsedPort : 4321;
+  const host = resolveServerHost(process.env.HOST);
+  const port = resolveServerPort(process.env.PORT);
+  const allowedOrigins = resolveAllowedOrigins(
+    process.env.CARDPULSE_ALLOWED_ORIGINS,
+  );
   const runtime = createRuntimeFromEnv();
   const server = createServer(
-    createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
+    createRequestHandler(runtime.pipeline, runtime.coordinator, runtime, {
+      allowedOrigins,
+    }),
   );
 
-  server.listen(port, "127.0.0.1", () => {
+  server.listen(port, host, () => {
     console.warn(
-      `CardPulse Football backend API listening on http://127.0.0.1:${port} (${runtime.mode} mode)`,
+      `CardPulse Football backend API listening on http://${host}:${port} (${runtime.mode} mode)`,
     );
   });
 }

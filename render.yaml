@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: cardpulse-football-api
+    runtime: node
+    plan: free
+    branch: player-search-experience
+    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    startCommand: pnpm --filter @bidsentinel/collector-worker start
+    healthCheckPath: /health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: CARDPULSE_ALLOWED_ORIGINS
+        value: https://cardpulse-football-web.onrender.com
+      - key: CARDPULSE_SOURCE_ID
+        value: statbunker-epl-2025-26
+      - key: CARDPULSE_SOURCE_PROFILE
+        value: statbunker
+      - key: CARDPULSE_ENABLE_LIVE_MUTATIONS
+        value: "true"
+      - key: BRIGHT_DATA_TARGET_URL
+        value: https://www.statbunker.com/competitions/PlayerStandings?comp_id=776
+      - key: BRIGHT_DATA_API_TOKEN
+        sync: false
+      - key: BRIGHT_DATA_COLLECTOR_ID
+        sync: false
+      - key: CARDPULSE_OPERATOR_TOKEN
+        sync: false
+
+  - type: web
+    name: cardpulse-football-web
+    runtime: static
+    plan: free
+    branch: player-search-experience
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @bidsentinel/web build
+    staticPublishPath: ./apps/web/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://cardpulse-football-api.onrender.com
