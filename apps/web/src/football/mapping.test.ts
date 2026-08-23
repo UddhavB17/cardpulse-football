@@ -405,6 +405,23 @@ describe("StatBunker live-data compatibility", () => {
     expect(card.provenance.collectorIdRedacted).not.toContain("tatbunker");
   });
 
+  it("omits the minutes bar when the source does not publish minutes", () => {
+    const card = buildPlayerCard(
+      {
+        ...statbunkerPlayer,
+        stats: { ...statbunkerPlayer.stats, minutesPlayed: null },
+      },
+      "c_statbunker_epl_9f3a17",
+    );
+    if (card === null) throw new Error("Canonical record must produce a card");
+
+    expect(card.attributes.map((attribute) => attribute.label)).toEqual([
+      "GOALS",
+      "ASSISTS",
+      "APPEARANCES",
+    ]);
+  });
+
   it("labels StatBunker output live only when the runtime reports live", () => {
     expect(resolveDataLabel(statbunkerLiveRuntime, false)).toBe(
       "LIVE PROVIDER",

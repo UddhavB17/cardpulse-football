@@ -53,7 +53,7 @@ export interface PlayerSummaryLike {
     assists: number;
     yellowCards: number;
     redCards: number;
-    minutesPlayed: number;
+    minutesPlayed: number | null;
   };
   observedAt: string | null;
   latestSnapshot: { snapshotId: string; version: number };
@@ -157,7 +157,11 @@ const STAT_SCALES = {
 function toAttributes(
   stats: PlayerSummaryLike["stats"],
 ): PlayerCardView["attributes"] {
-  return [
+  const entries: Array<{
+    label: string;
+    value: number | null;
+    scale: number;
+  }> = [
     { label: "GOALS", value: stats.goals, scale: STAT_SCALES.GOALS },
     { label: "ASSISTS", value: stats.assists, scale: STAT_SCALES.ASSISTS },
     {
@@ -170,14 +174,22 @@ function toAttributes(
       value: stats.minutesPlayed,
       scale: STAT_SCALES.MINUTES,
     },
-  ].map((entry) => ({
-    label: entry.label,
-    value: entry.value,
-    pct: Math.max(
-      4,
-      Math.min(100, Math.round((entry.value / entry.scale) * 100)),
-    ),
-  }));
+  ];
+
+  return entries.flatMap((entry) =>
+    entry.value === null
+      ? []
+      : [
+          {
+            label: entry.label,
+            value: entry.value,
+            pct: Math.max(
+              4,
+              Math.min(100, Math.round((entry.value / entry.scale) * 100)),
+            ),
+          },
+        ],
+  );
 }
 
 function toFormMarks(seedSource: string): FormMark[] {

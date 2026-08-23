@@ -46,7 +46,10 @@ const PlayerStatsSchema = z
     assists: z.number().int().nonnegative().max(500),
     yellowCards: z.number().int().nonnegative().max(200),
     redCards: z.number().int().nonnegative().max(50),
-    minutesPlayed: z.number().int().nonnegative().max(100_000),
+    // Some public leaderboards publish the core stat line without minutes.
+    // Keep the field explicit and nullable so "unavailable" is never
+    // misrepresented as zero.
+    minutesPlayed: z.number().int().nonnegative().max(100_000).nullable(),
   })
   .strict();
 

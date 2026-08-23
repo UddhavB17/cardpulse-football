@@ -28,7 +28,8 @@ export interface StatBunkerSourceAdapter {
  * specific lives here so its semantics are documented and tested in one spot.
  *
  * Expected Scraper Studio output fields (snake_case; case/punctuation
- * variants are tolerated):
+ * variants are tolerated). Bright Data may omit the three nullable
+ * enrichment keys from completed dataset rows:
  *   player_name, player_url, team_name, position, appearances, goals,
  *   assists, yellow_cards, second_yellow_cards, red_cards, minutes_played,
  *   nationality, season, source_url
@@ -48,14 +49,12 @@ export interface StatBunkerSourceAdapter {
  * Same input always yields the same ID; no timestamps or randomness.
  *
  * Fail-closed policy: core fields (player name, team, position, season,
- * source URL) and every required stat must be present and usable. Missing
- * keys, dash/blank cells, and malformed values reject the row with structured
- * issues; nothing is fabricated. This is what contains a partially failed
- * generated selector (for example a broken detail-page `#show` selector that
- * drops minutes/nationality enrichment): affected rows are quarantined with
- * their raw payload while complete rows in the same batch still land. The
- * only nullable passthroughs are `nationality` (dash/blank maps to
- * contract-null) and `shirtNumber` (not part of the expected output).
+ * source URL) and the statistics published by PlayerStandings must be present
+ * and usable. Missing core keys, dash/blank core cells, and malformed values
+ * reject the row with structured issues; nothing is fabricated. The list
+ * page does not publish nationality or minutes, so those enrichment fields
+ * map to explicit contract nulls. `shirtNumber` is also nullable because it
+ * is not part of the expected output.
  */
 export const STATBUNKER_SOURCE_PROFILE = "statbunker";
 
@@ -591,13 +590,12 @@ export class StatBunkerRowMapper {
       });
     }
 
-    const statsInput: Record<string, number> = {};
+    const statsInput: Record<string, number | null> = {};
     const statFields = [
       { key: "appearances", aliases: FIELD_ALIASES.appearances },
       { key: "goals", aliases: FIELD_ALIASES.goals },
       { key: "assists", aliases: FIELD_ALIASES.assists },
       { key: "yellowCards", aliases: FIELD_ALIASES.yellowCards },
-      { key: "minutesPlayed", aliases: FIELD_ALIASES.minutesPlayed },
     ] as const;
     for (const field of statFields) {
       const parsed = parseStatNumber(lookupField(normalized, field.aliases));
@@ -616,6 +614,25 @@ export class StatBunkerRowMapper {
           message: `StatBunker cell for ${field.key} is not a usable integer`,
         });
       }
+    }
+
+    // StatBunker's PlayerStandings table does not publish minutes. Bright
+    // Data also omits object keys whose value is null in a completed dataset,
+    // so both a missing cell and an explicit null mean "not published" here.
+    // Malformed non-null values still fail closed.
+    const minutesPlayed = parseStatNumber(
+      lookupField(normalized, FIELD_ALIASES.minutesPlayed),
+    );
+    if (minutesPlayed.kind === "number") {
+      statsInput.minutesPlayed = minutesPlayed.value;
+    } else if (minutesPlayed.kind === "unavailable") {
+      statsInput.minutesPlayed = null;
+    } else {
+      issues.push({
+        code: "invalid_field",
+        path: ["stats", "minutesPlayed"],
+        message: "StatBunker cell for minutesPlayed is not a usable integer",
+      });
     }
 
     const straightReds = parseStatNumber(

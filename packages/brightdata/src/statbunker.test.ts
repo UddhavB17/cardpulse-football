@@ -302,15 +302,17 @@ describe("StatBunkerRowMapper", () => {
     });
   });
 
-  it("keeps honest nulls for unavailable optional profile fields but still fails closed on required stats", () => {
+  it("keeps honest nulls for unavailable profile and minutes fields", () => {
     const mapper = new StatBunkerRowMapper({ sourceId });
     const nullProfile = mapper.map(
       specRow({ nationality: null, minutes_played: "-" }),
       observedAt,
     );
-    // minutes_played is a required contract stat: an unavailable cell cannot
-    // be substituted, so this row must quarantine.
-    expect(nullProfile.ok).toBe(false);
+    expect(nullProfile.ok).toBe(true);
+    if (nullProfile.ok && nullProfile.record.entityType === "player") {
+      expect(nullProfile.record.nationality).toBeNull();
+      expect(nullProfile.record.stats.minutesPlayed).toBeNull();
+    }
 
     const nullNationalityOnly = mapper.map(
       specRow({ nationality: null }),
@@ -511,10 +513,10 @@ describe("stable ID collision regressions", () => {
 describe("partial selector failure resilience (#show incident)", () => {
   const mapper = new StatBunkerRowMapper({ sourceId });
 
-  it("quarantines detail-enrichment failures row-by-row without fabricating values", () => {
-    // A broken generated #show selector drops the per-player detail fetch,
-    // so minutes/nationality enrichment arrives dashed or missing while list
-    // columns stay intact.
+  it("accepts unavailable optional enrichment without fabricating zero minutes", () => {
+    // The verified one-page collector intentionally skips the broken #show
+    // detail interaction. Core list stats remain authoritative while
+    // minutes/nationality are represented as unavailable.
     const complete = specRow();
     const noMinutes = specRow({
       player_name: "Enriched Missing",
@@ -535,24 +537,38 @@ describe("partial selector failure resilience (#show incident)", () => {
       [complete, noMinutes, noDetailAtAll],
       observedAt,
     );
-    expect(batch.records).toHaveLength(1);
-    expect(batch.rejectedRows).toHaveLength(2);
+    expect(batch.records).toHaveLength(3);
+    expect(batch.rejectedRows).toHaveLength(0);
 
-    const accepted = batch.records[0];
-    if (accepted?.entityType !== "player") throw new Error("unreachable");
-    // Nothing invented: real zeros stay real, unavailable cells never land.
-    expect(accepted.stats.minutesPlayed).toBe(2820);
-    expect(accepted.nationality).toBe("Germany");
+    const minutes = batch.records.map((record) => {
+      if (record.entityType !== "player") throw new Error("unreachable");
+      return record.stats.minutesPlayed;
+    });
+    expect(minutes).toEqual([2820, null, null]);
+    expect(batch.records[0]?.entityType).toBe("player");
+    if (batch.records[0]?.entityType === "player") {
+      expect(batch.records[0].nationality).toBe("Germany");
+    }
+    for (const record of batch.records.slice(1)) {
+      if (record.entityType !== "player") throw new Error("unreachable");
+      expect(record.nationality).toBeNull();
+    }
+  });
 
-    for (const rejection of batch.rejectedRows) {
-      const paths = rejection.issues.map((issue) => issue.path.join("."));
-      expect(paths).toContain("stats.minutesPlayed");
-      expect(rejection.issues.map((issue) => issue.code)).toContain(
-        "unavailable_field",
+  it("still quarantines malformed non-null minutes", () => {
+    const outcome = mapper.map(
+      specRow({ minutes_played: "ninety minutes" }),
+      observedAt,
+    );
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.issues).toContainEqual(
+        expect.objectContaining({
+          code: "invalid_field",
+          path: ["stats", "minutesPlayed"],
+        }),
       );
     }
-    expect(batch.rejectedRows[0]?.row).toBe(noMinutes);
-    expect(batch.rejectedRows[1]?.row).toBe(noDetailAtAll);
   });
 
   it("still accepts rows whose only enrichment loss is the nullable nationality", () => {

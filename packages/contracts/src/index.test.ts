@@ -24,6 +24,15 @@ describe("FootballRecordSchema", () => {
     );
   });
 
+  it("accepts explicit null minutes when the source does not publish them", () => {
+    const result = FootballRecordSchema.safeParse({
+      ...validPlayerFixture,
+      stats: { ...validPlayerFixture.stats, minutesPlayed: null },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it("rejects unknown extraction fields on a player card", () => {
     const result = FootballRecordSchema.safeParse({
       ...validPlayerFixture,

@@ -83,6 +83,7 @@ BRIGHT_DATA_API_TOKEN=<token from Account Settings → API Tokens>
 BRIGHT_DATA_COLLECTOR_ID=c_the_real_value_from_step_3
 BRIGHT_DATA_TARGET_URL=https://www.statbunker.com/competitions/PlayerStandings?comp_id=<your_comp_id>
 CARDPULSE_SOURCE_ID=statbunker-epl-2025-26
+CARDPULSE_SOURCE_PROFILE=statbunker
 CARDPULSE_ENABLE_LIVE_MUTATIONS=false
 CARDPULSE_OPERATOR_TOKEN=
 ```
@@ -99,13 +100,17 @@ OUT="$TMPDIR/cardpulse-statbunker-baseline.json"
 bdata scraper run "$BRIGHT_DATA_COLLECTOR_ID" "$BRIGHT_DATA_TARGET_URL" --pretty > "$OUT"
 
 jq 'length' "$OUT"                                   # expect 10
-jq '.[0] | keys' "$OUT"                              # the 14 contract keys
+jq '.[0] | keys' "$OUT"                              # stable provider shape
+jq '[.[] | has("input")] | all' "$OUT"              # provider provenance
 jq '[.[].red_cards == 0] | all' "$OUT"               # zeros preserved as numbers
-jq '[.[] | has("minutes_played") and has("nationality")] | all' "$OUT"
-jq -r '.[0].player_url' "$OUT"                       # absolute /players/getPlayerStats URL
+jq '[.[] | (.minutes_played? // null) == null and (.nationality? // null) == null] | all' "$OUT"
+jq -e '.[0] | .player_name == "Jarrod Bowen" and .appearances == 38 and .goals == 9 and .assists == 11' "$OUT"
 ```
 
-If any check fails, fix the prompt via heal (step 7) before continuing.
+The completed dataset can omit requested keys whose value is null and add an
+`input` object. CardPulse normalizes that documented provider shape. If any
+published-field or sentinel check fails, fix the prompt via heal (step 7)
+before continuing.
 
 ### Raw-HTTP equivalent (what CardPulse itself does)
 
@@ -173,24 +178,27 @@ bdata scraper heal "$BRIGHT_DATA_COLLECTOR_ID" \
   "$(cat scrapers/statbunker/heal-prompt.txt)" \
   --url "$BRIGHT_DATA_TARGET_URL" | tee "$TMPDIR/cardpulse-statbunker-heal.json"
 
-# 2) Validate the preview BEFORE approving:
+# 2) Validate the preview BEFORE approving. Scraper Studio currently samples
+#    two rows in previews; the post-approval run remains the 10-row count gate:
 PREVIEW="$TMPDIR/cardpulse-statbunker-heal-preview.json"
 jq '.preview_result' "$TMPDIR/cardpulse-statbunker-heal.json" > "$PREVIEW"
 
-jq -e 'length == 10' "$PREVIEW"                       # exactly 10 rows
+jq -e 'length > 0' "$PREVIEW"                         # non-empty sample
 jq -e 'all(.[]; (keys | length) == 14)' "$PREVIEW"    # stable key set
 jq -e 'all(.[]; .minutes_played == null or (.minutes_played | type) == "number")' "$PREVIEW"
 jq -e 'all(.[]; .red_cards == null or (.red_cards | type) == "number")' "$PREVIEW"
+jq -e '.[0] | .player_name == "Jarrod Bowen" and .appearances == 38 and .goals == 9 and .assists == 11 and .yellow_cards == 4 and .second_yellow_cards == 0 and .red_cards == 0' "$PREVIEW"
 # reject the fix if these fail: bdata scraper approve "$BRIGHT_DATA_COLLECTOR_ID" --reject
 
 # 3) Explicit human approval (same c_* ID, no new collector):
-bdata scraper approve "$BRIGHT_DATA_COLLECTOR_ID" --url "$BRIGHT_DATA_TARGET_URL"
+bdata scraper approve "$BRIGHT_DATA_COLLECTOR_ID" --auto-save --url "$BRIGHT_DATA_TARGET_URL"
 # status advances to done; --reject leaves the collector unchanged instead
 
 # 4) Rerun the SAME collector and confirm recovery:
 bdata scraper run "$BRIGHT_DATA_COLLECTOR_ID" "$BRIGHT_DATA_TARGET_URL" --pretty \
   > "$TMPDIR/cardpulse-statbunker-postheal.json"
 jq 'length' "$TMPDIR/cardpulse-statbunker-postheal.json"   # 10 healthy rows again
+jq '[.[] | select(has("error") or has("error_code"))] | length' "$TMPDIR/cardpulse-statbunker-postheal.json" # 0
 ```
 
 Through CardPulse instead of raw CLI, the same flow maps to the dev/operator

@@ -9,8 +9,8 @@ Studio. Capture the following before submission:
 - the custom Scraper Studio create command and redacted result
   (`bdata scraper create … "$(cat scrapers/statbunker/create-prompt.txt)"`);
 - the first successful run with the real `c_*` Collector ID partially redacted;
-- representative structured JSON returned by that run (10 rows, the 14
-  contract keys, numeric zeros preserved);
+- representative structured JSON returned by that run (10 rows, stable
+  provider shape, numeric zeros preserved, nullable enrichment omitted);
 - a layout change or controlled equivalent that breaks the extraction;
 - `bdata scraper heal` with `scrapers/statbunker/heal-prompt.txt` repairing
   that same Collector ID;
@@ -32,8 +32,12 @@ same throughout the flow.
 ## Current live evidence
 
 [The redacted first-run artifact](live/statbunker-first-run-failure.redacted.json)
-proves that Bright Data accepted a real job for the StatBunker target and
-returned a real selector timeout. It also records the same-ID heal request and
-the unapproved provider-side job still running after the CLI timeout. It does
-**not** prove a successful scrape or completed recovery; those artifacts remain
-required before submission.
+proves that Bright Data accepted the original job and returned a real `#show`
+selector timeout.
+
+[The redacted same-ID recovery artifact](live/statbunker-same-id-recovery.redacted.json)
+records the rejected invalid preview, the corrected sentinel-validated
+preview, explicit approval, a successful 10-row same-ID rerun, its SHA-256,
+and 10/10 acceptance through the CardPulse mapper. This proves the provider
+and mapping path. A recorded browser/API live-mode run and submission video
+are still required before claiming the complete deployed experience.
