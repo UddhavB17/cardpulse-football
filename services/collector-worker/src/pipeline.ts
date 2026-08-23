@@ -86,6 +86,9 @@ const STRUCTURAL_REQUIRED_FIELDS = new Set([
   "competition",
   "rank",
   "stats",
+  "matchId",
+  "playerTeam",
+  "playedOn",
 ]);
 
 function structuralFailureCount(quarantine: QuarantinedExtraction): number {

@@ -5,6 +5,7 @@ import {
 } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { ZodTypeAny } from "zod";
+import { BrightDataApiError } from "@bidsentinel/brightdata";
 import {
   ApiHealthResponseSchema,
   PlayerListResponseSchema,
@@ -15,6 +16,9 @@ import {
   SourceHealthListResponseSchema,
   QuarantineListResponseSchema,
   RuntimeStatusResponseSchema,
+  GenerateRequestSchema,
+  SourceIdSchema,
+  redactCollectorId,
   type FootballRecord,
   type FootballSnapshot,
   type PlayerSummary,
@@ -23,6 +27,7 @@ import { demoRecordsFor } from "@bidsentinel/contracts/fixtures";
 import { hashPayload } from "@bidsentinel/validation";
 import type { CardPulsePipeline } from "./pipeline.js";
 import type { SelfHealingCoordinator } from "./healing-coordinator.js";
+import { PlayerExperienceService } from "./player-experience.js";
 import {
   createRuntimeFromEnv,
   isAuthorizedOperatorToken,
@@ -75,6 +80,16 @@ class ForbiddenError extends HttpError {
   }
 }
 
+function decodePathSegment(value: string): string {
+  try {
+    const decoded = decodeURIComponent(value);
+    if (decoded.trim() === "") throw new Error("empty");
+    return decoded;
+  } catch {
+    throw new BadRequestError("Route contains an invalid encoded identifier");
+  }
+}
+
 /** Structurally breaks a demo batch to emulate page-layout drift. */
 function driftRecords(sourceId: string): unknown[] {
   return demoRecordsFor("valid").map((record): unknown => {
@@ -109,6 +124,69 @@ export function createRequestHandler(
         ],
       };
     })();
+  const playerExperience = new PlayerExperienceService({
+    pipeline: activeRuntime.pipeline,
+    sourceId: activeRuntime.sourceId,
+    collect: async (request) => {
+      if (
+        activeRuntime.mode !== "live" ||
+        activeRuntime.collectionProvider === null ||
+        activeRuntime.collectorId === null
+      ) {
+        throw new Error(
+          "Live Bright Data collection is not configured; runtime is explicitly in mock mode",
+        );
+      }
+      try {
+        const batch = await activeRuntime.collectionProvider.collect({
+          sourceId: request.sourceId,
+          targetUrl: request.targetUrl,
+          requestedAt: new Date().toISOString(),
+        });
+        if (batch.collectorId !== activeRuntime.collectorId) {
+          throw new Error(
+            "Bright Data collection returned an unexpected collector ID; refusing to process the batch",
+          );
+        }
+        return {
+          collectorId: batch.collectorId,
+          extractorVersion: batch.extractorVersion,
+          rawRows: batch.rawPayloads ?? batch.payloads,
+        };
+      } catch (error) {
+        const reason =
+          error instanceof BrightDataApiError && error.code === "rate_limited"
+            ? "rate-limited"
+            : error instanceof BrightDataApiError &&
+                ["network", "timeout", "api_error"].includes(error.code)
+              ? "network-error"
+              : "unknown";
+        activeRuntime.pipeline.recordCollectionFailure(
+          activeRuntime.sourceId,
+          new Date().toISOString(),
+          reason,
+          error instanceof Error
+            ? error.message
+            : "Bright Data collection failed without a structured error",
+        );
+        throw error;
+      }
+    },
+  });
+  playerExperience.indexPlayers(
+    latestSnapshotsOfType(activeRuntime.pipeline, "player"),
+  );
+  const requestedHealingSourceId = (url: URL): string => {
+    const requested = url.searchParams.get("sourceId")?.trim();
+    if (requested === undefined || requested === "") {
+      return activeRuntime.sourceId;
+    }
+    const parsed = SourceIdSchema.safeParse(requested);
+    if (!parsed.success) {
+      throw new BadRequestError("sourceId must be a valid CardPulse source ID");
+    }
+    return parsed.data;
+  };
   return async (req: IncomingMessage, res: ServerResponse) => {
     const generatedAt = new Date().toISOString();
     const requestId = `req-${randomUUID().replace(/-/g, "").substring(0, 15)}`;
@@ -218,6 +296,245 @@ export function createRequestHandler(
         return;
       }
 
+      if (path === "/api/seasons") {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        sendJson(200, { data: playerExperience.listSeasons(), generatedAt });
+        return;
+      }
+
+      if (path === "/api/search/players") {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        for (const key of url.searchParams.keys()) {
+          if (key !== "q" && key !== "season") {
+            throw new BadRequestError(`Unknown query parameter: ${key}`);
+          }
+        }
+        const query = url.searchParams.get("q") ?? "";
+        const season = url.searchParams.get("season")?.trim();
+        if (
+          season !== undefined &&
+          !playerExperience
+            .listSeasons()
+            .some((entry) => entry.season === season)
+        ) {
+          throw new BadRequestError(
+            `Season "${season}" is not in the verified StatBunker registry`,
+          );
+        }
+        sendJson(200, {
+          data: playerExperience.searchPlayers(query, {
+            ...(season === undefined ? {} : { season }),
+          }),
+          generatedAt,
+        });
+        return;
+      }
+
+      if (path === "/api/player-index/refresh") {
+        if (req.method !== "POST") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        if (activeRuntime.mode !== "live") {
+          throw new ConflictError(
+            "Live player-index refresh is unavailable in explicit mock mode",
+          );
+        }
+        requireLiveMutationAuthorization();
+        const raw = await parseJsonBody(req);
+        if (
+          raw === null ||
+          typeof raw !== "object" ||
+          Array.isArray(raw) ||
+          typeof (raw as { season?: unknown }).season !== "string"
+        ) {
+          throw new BadRequestError(
+            "Request body must include a verified string season",
+          );
+        }
+        const season = (raw as { season: string }).season.trim();
+        if (
+          !playerExperience
+            .listSeasons()
+            .some((entry) => entry.season === season)
+        ) {
+          throw new BadRequestError(
+            `Season "${season}" is not in the verified StatBunker registry`,
+          );
+        }
+        const refreshed = await playerExperience.refreshIndex(season);
+        sendJson(200, { data: refreshed, generatedAt });
+        return;
+      }
+
+      if (path === "/api/cards/generate") {
+        if (req.method !== "POST") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        if (activeRuntime.mode !== "live") {
+          throw new ConflictError(
+            "Live card generation is unavailable in explicit mock mode; use the clearly labelled browser demo action instead",
+          );
+        }
+        requireLiveMutationAuthorization();
+        const raw = await parseJsonBody(req);
+        if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+          throw new BadRequestError("Request body must be a JSON object");
+        }
+        const requestObject = raw as Record<string, unknown>;
+        for (const key of Object.keys(requestObject)) {
+          if (!["schemaVersion", "playerId", "season", "mode"].includes(key)) {
+            throw new BadRequestError(`Unknown request field: ${key}`);
+          }
+        }
+        if (requestObject.mode !== undefined && requestObject.mode !== "live") {
+          throw new BadRequestError(
+            "The HTTP generation route accepts live mode only; demo data is an explicit browser-side action",
+          );
+        }
+        const parsed = GenerateRequestSchema.safeParse({
+          schemaVersion: 1,
+          playerId: requestObject.playerId,
+          season: requestObject.season,
+        });
+        if (!parsed.success) {
+          throw new BadRequestError("Invalid player card generation request");
+        }
+        const start = playerExperience.startGenerate(parsed.data);
+        if (start.kind === "immediate") {
+          if (start.result.outcome === "failed") {
+            throw new BadRequestError(
+              start.result.failureReason ?? "Card generation failed closed",
+            );
+          }
+          sendJson(200, { data: start.result.cardBundle, generatedAt });
+          return;
+        }
+        void start.completion.catch(() => undefined);
+        sendJson(202, {
+          data: { runId: start.runId, status: "starting_collector" },
+          generatedAt,
+        });
+        return;
+      }
+
+      const scrapeMatch = /^\/api\/scrapes\/([^/]+)$/.exec(path);
+      if (scrapeMatch !== null) {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        const run = playerExperience.getRun(
+          decodePathSegment(scrapeMatch[1] ?? ""),
+        );
+        if (run === null) throw new NotFoundError("Scrape run not found");
+        const card =
+          run.cardId === null ? null : playerExperience.getCard(run.cardId);
+        sendJson(200, {
+          data: {
+            ...run,
+            status: run.terminalStatus ?? run.currentStage ?? "running",
+            detail: run.failureReason,
+            card,
+          },
+          generatedAt,
+        });
+        return;
+      }
+
+      const cardMatch = /^\/api\/cards\/([^/]+)$/.exec(path);
+      if (cardMatch !== null) {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        for (const key of url.searchParams.keys()) {
+          if (key !== "season") {
+            throw new BadRequestError(`Unknown query parameter: ${key}`);
+          }
+        }
+        const playerId = decodePathSegment(cardMatch[1] ?? "");
+        const season = url.searchParams.get("season")?.trim();
+        if (season === undefined || season === "") {
+          throw new BadRequestError("season query parameter is required");
+        }
+        const card = playerExperience.getLatestCard(playerId, season);
+        if (card === null) throw new NotFoundError("Player card not found");
+        sendJson(200, { data: card, generatedAt });
+        return;
+      }
+
+      const seasonsMatch = /^\/api\/players\/([^/]+)\/seasons$/.exec(path);
+      if (seasonsMatch !== null) {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        const playerId = decodePathSegment(seasonsMatch[1] ?? "");
+        const seasons = playerExperience.getPlayerSeasons(playerId);
+        if (seasons.length === 0) throw new NotFoundError("Player not found");
+        sendJson(200, { data: seasons, generatedAt });
+        return;
+      }
+
+      const matchesMatch = /^\/api\/players\/([^/]+)\/matches$/.exec(path);
+      if (matchesMatch !== null) {
+        if (req.method !== "GET") {
+          throw new MethodNotAllowedError("Method not allowed");
+        }
+        for (const key of url.searchParams.keys()) {
+          if (key !== "season") {
+            throw new BadRequestError(`Unknown query parameter: ${key}`);
+          }
+        }
+        const playerId = decodePathSegment(matchesMatch[1] ?? "");
+        if (playerExperience.getPlayerSeasons(playerId).length === 0) {
+          throw new NotFoundError("Player not found");
+        }
+        const season = url.searchParams.get("season")?.trim();
+        if (season === undefined || season === "") {
+          throw new BadRequestError("season query parameter is required");
+        }
+        let availability;
+        try {
+          availability = playerExperience.getMatches(playerId, season);
+        } catch (error) {
+          throw new BadRequestError(
+            error instanceof Error ? error.message : "Invalid season",
+          );
+        }
+        const card = playerExperience.getLatestCard(playerId, season);
+        const teamName = card?.team.name ?? null;
+        sendJson(200, {
+          data: {
+            ...availability,
+            rows: availability.rows.map((row) => ({
+              ...row,
+              teamName: row.playerTeam ?? teamName,
+              opponent:
+                row.opponent ??
+                (teamName !== null && row.homeTeam === teamName
+                  ? row.awayTeam
+                  : teamName !== null && row.awayTeam === teamName
+                    ? row.homeTeam
+                    : null),
+              venue:
+                row.venue ??
+                (teamName !== null && row.homeTeam === teamName
+                  ? "home"
+                  : teamName !== null && row.awayTeam === teamName
+                    ? "away"
+                    : null),
+              playerGoals: row.playerGoals ?? null,
+              playerAssists: row.playerAssists ?? null,
+              playerMinutes: row.playerMinutes ?? null,
+            })),
+          },
+          generatedAt,
+        });
+        return;
+      }
+
       if (path.startsWith("/api/healing/")) {
         if (req.method !== "GET") {
           throw new MethodNotAllowedError("Method not allowed");
@@ -236,7 +553,7 @@ export function createRequestHandler(
                 ? null
                 : {
                     incidentId: incident.incidentId,
-                    collectorId: incident.collectorId,
+                    collectorId: redactCollectorId(incident.collectorId),
                     state: incident.state,
                     openedAt: incident.openedAt,
                     updatedAt: incident.updatedAt,
@@ -490,7 +807,7 @@ export function createRequestHandler(
             success: summary.success,
             mode: "live",
             outcomes: summary.outcomes,
-            collectorId: summary.collectorId,
+            collectorId: redactCollectorId(summary.collectorId),
           });
           return;
         }
@@ -531,7 +848,7 @@ export function createRequestHandler(
           success: accepted > 0 && accepted === results.length,
           mode,
           outcomes: results.map((result) => result.outcome),
-          collectorId: MOCK_DEV_COLLECTOR_ID,
+          collectorId: redactCollectorId(MOCK_DEV_COLLECTOR_ID),
           healingState: coordinatorInstance.getHealingState(sourceId),
         });
         return;
@@ -541,25 +858,23 @@ export function createRequestHandler(
         if (req.method !== "POST")
           throw new MethodNotAllowedError("Method not allowed");
         requireLiveMutationAuthorization();
-        const state = coordinatorInstance.getHealingState(
-          activeRuntime.sourceId,
-        );
+        const healingSourceId = requestedHealingSourceId(url);
+        const state = coordinatorInstance.getHealingState(healingSourceId);
         if (state !== "healing_requested" && state !== "approved") {
           throw new ConflictError(
             `Cannot poll self-healing progress from state ${state}`,
           );
         }
         const progress = await coordinatorInstance.pollProgress(
-          activeRuntime.sourceId,
+          healingSourceId,
           new Date().toISOString(),
         );
         sendJson(200, {
           success: true,
           status: progress.status,
           previewCount: progress.previewResult.length,
-          healingState: coordinatorInstance.getHealingState(
-            activeRuntime.sourceId,
-          ),
+          sourceId: healingSourceId,
+          healingState: coordinatorInstance.getHealingState(healingSourceId),
         });
         return;
       }
@@ -569,34 +884,36 @@ export function createRequestHandler(
           throw new MethodNotAllowedError("Method not allowed");
         }
         requireLiveMutationAuthorization();
-        const state = coordinatorInstance.getHealingState(
-          activeRuntime.sourceId,
-        );
+        const healingSourceId = requestedHealingSourceId(url);
+        const state = coordinatorInstance.getHealingState(healingSourceId);
         if (state !== "awaiting_approval" && state !== "preview_invalid") {
           throw new ConflictError(
             `Cannot validate a healing preview from state ${state}`,
           );
         }
-        const incident = coordinatorInstance.getIncident(
-          activeRuntime.sourceId,
-        );
+        const incident = coordinatorInstance.getIncident(healingSourceId);
         if (!incident) {
           throw new ConflictError(
             "No self-healing incident has a preview to validate",
           );
         }
-        const valid = coordinatorInstance.handlePreview(
-          activeRuntime.sourceId,
+        const observedAt = new Date().toISOString();
+        const previewPayloads = playerExperience.canonicalizeHealingPreview(
+          healingSourceId,
           incident.previewPayloads ?? [],
+          observedAt,
+        );
+        const valid = coordinatorInstance.handlePreview(
+          healingSourceId,
+          previewPayloads,
           1,
-          new Date().toISOString(),
+          observedAt,
         );
         sendJson(200, {
           success: valid,
-          previewCount: incident.previewPayloads?.length ?? 0,
-          healingState: coordinatorInstance.getHealingState(
-            activeRuntime.sourceId,
-          ),
+          sourceId: healingSourceId,
+          previewCount: previewPayloads.length,
+          healingState: coordinatorInstance.getHealingState(healingSourceId),
         });
         return;
       }
@@ -624,9 +941,8 @@ export function createRequestHandler(
           );
         }
         const approve = (body as { approve: boolean }).approve;
-        const state = coordinatorInstance.getHealingState(
-          activeRuntime.sourceId,
-        );
+        const healingSourceId = requestedHealingSourceId(url);
+        const state = coordinatorInstance.getHealingState(healingSourceId);
         if (approve && state !== "preview_valid") {
           throw new ConflictError(
             `Cannot approve self-healing from state ${state}; a schema-valid preview is required`,
@@ -645,6 +961,9 @@ export function createRequestHandler(
 
         const rerunFn = async () => {
           if (activeRuntime.mode === "live") {
+            if (playerExperience.hasRecoveryTarget(healingSourceId)) {
+              return playerExperience.verifyRecovery(healingSourceId);
+            }
             return runConfiguredCollection(activeRuntime, {
               enableHealing: false,
             });
@@ -683,18 +1002,17 @@ export function createRequestHandler(
         };
 
         await coordinatorInstance.approveOrReject(
-          activeRuntime.sourceId,
+          healingSourceId,
           approve,
           rerunFn,
           new Date().toISOString(),
         );
         sendJson(200, {
           success:
-            coordinatorInstance.getHealingState(activeRuntime.sourceId) ===
+            coordinatorInstance.getHealingState(healingSourceId) ===
             "recovered",
-          healingState: coordinatorInstance.getHealingState(
-            activeRuntime.sourceId,
-          ),
+          sourceId: healingSourceId,
+          healingState: coordinatorInstance.getHealingState(healingSourceId),
         });
         return;
       }
@@ -843,6 +1161,18 @@ async function readBodyText(req: IncomingMessage): Promise<string> {
       reject(err);
     });
   });
+}
+
+async function parseJsonBody(req: IncomingMessage): Promise<unknown> {
+  const bodyText = await readBodyText(req);
+  if (bodyText.trim() === "") {
+    throw new BadRequestError("Request body must be valid JSON");
+  }
+  try {
+    return JSON.parse(bodyText) as unknown;
+  } catch {
+    throw new BadRequestError("Request body must be valid JSON");
+  }
 }
 
 if (process.env.NODE_ENV !== "test") {

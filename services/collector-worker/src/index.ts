@@ -20,6 +20,19 @@ export {
   type RuntimeMode,
 } from "./runtime.js";
 export {
+  DEFAULT_FRESHNESS_TTL_SECONDS,
+  PlayerExperienceService,
+  buildVerifiedSnapshot,
+  type PlayerExperienceCollectionBatch,
+  type PlayerExperienceCollectionRequest,
+  type PlayerExperienceCollector,
+  type PlayerExperienceGenerationStart,
+  type PlayerExperienceIndexRefreshResult,
+  type PlayerExperienceRecoveryVerification,
+  type PlayerExperienceServiceOptions,
+  type PlayerSearchOptions,
+} from "./player-experience.js";
+export {
   DEFAULT_SEMANTIC_DIFF_POLICY,
   diffFootballSnapshots,
   type SemanticDiffPolicy,

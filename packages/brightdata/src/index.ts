@@ -16,6 +16,8 @@ export interface FootballCollectionBatch {
   collectorId: string;
   extractorVersion: string;
   receivedAt: string;
+  /** Exact dataset rows before any source/generic canonical mapper. */
+  rawPayloads?: unknown[];
   payloads: unknown[];
 }
 
@@ -196,6 +198,7 @@ export class BrightDataCollectionProvider implements FootballCollectionProvider 
       collectorId: this.collectorId,
       extractorVersion: `brightdata-${this.collectorId}`,
       receivedAt,
+      rawPayloads: rawRows,
       payloads,
     };
   }
@@ -904,3 +907,22 @@ export type {
   StatBunkerRowIssueCode,
   StatBunkerRowOutcome,
 } from "./statbunker.js";
+export { StatBunkerMatchRowMapper } from "./statbunker-matches.js";
+export type {
+  StatBunkerMatchContext,
+  StatBunkerMatchIssue,
+  StatBunkerMatchOutcome,
+} from "./statbunker-matches.js";
+export {
+  STATBUNKER_PLAYER_MATCHES_BASE_URL,
+  STATBUNKER_PLAYER_SEARCH_BASE_URL,
+  STATBUNKER_PLAYER_STANDINGS_BASE_URL,
+  VERIFIED_STATBUNKER_SEASONS,
+  isVerifiedStatBunkerSeason,
+  listVerifiedStatBunkerSeasons,
+  resolveVerifiedStatBunkerSeason,
+  statBunkerPlayerSeasonMatchesUrl,
+  statBunkerPlayerSearchResolverUrl,
+  statBunkerPlayerStandingsUrl,
+} from "./seasons.js";
+export type { VerifiedSeasonMetadata } from "@bidsentinel/contracts";
