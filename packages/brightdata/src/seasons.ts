@@ -129,3 +129,80 @@ export function resolveVerifiedStatBunkerSeason(
 export function listVerifiedStatBunkerSeasons(): readonly VerifiedSeasonMetadata[] {
   return VERIFIED_STATBUNKER_SEASONS;
 }
+
+/** Newest completed registry season; never the in-progress campaign. */
+export function latestCompleteVerifiedStatBunkerSeason(): VerifiedSeasonMetadata | null {
+  return (
+    [...VERIFIED_STATBUNKER_SEASONS]
+      .reverse()
+      .find((entry) => entry.complete) ?? null
+  );
+}
+
+/**
+ * Resolve a StatBunker standings/matches URL to its verified registry entry
+ * via `comp_id` / `comps_id`. Unknown hosts or unlisted competition IDs
+ * return null — callers must fail closed instead of guessing a season.
+ */
+export function resolveVerifiedStatBunkerSeasonFromUrl(
+  rawUrl: string,
+): VerifiedSeasonMetadata | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!/(^|\.)statbunker\.com$/i.test(parsed.hostname)) return null;
+    const rawComp =
+      parsed.searchParams.get("comp_id") ?? parsed.searchParams.get("comps_id");
+    const compId = Number(rawComp);
+    if (!Number.isSafeInteger(compId) || compId <= 0) return null;
+    return (
+      VERIFIED_STATBUNKER_SEASONS.find((entry) => entry.compId === compId) ??
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function pickStandingsSourceUrl(
+  record: Record<string, unknown>,
+  fallbackUrl: string,
+): string {
+  for (const key of ["source_url", "sourceUrl", "url"] as const) {
+    const value = record[key];
+    if (typeof value === "string" && value.includes("comp_id=")) return value;
+  }
+  const input = record.input;
+  if (typeof input === "string" && input.includes("comp_id=")) return input;
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const url = (input as Record<string, unknown>).url;
+    if (typeof url === "string" && url.includes("comp_id=")) return url;
+  }
+  return fallbackUrl;
+}
+
+/**
+ * Stamp the verified registry season onto a PlayerStandings row when the
+ * row's source URL (or the collection target) is that competition.
+ *
+ * This does not invent statistics. It only replaces a missing or stale
+ * extractor season label (the original collector hardcodes `"2025"`) with
+ * the season already bound to that verified URL. Rows whose URL points at a
+ * different competition are left untouched so the index can reject them.
+ */
+export function alignStandingsRowToVerifiedSeason(
+  row: unknown,
+  seasonMeta: VerifiedSeasonMetadata,
+): unknown {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) {
+    return row;
+  }
+  const record = row as Record<string, unknown>;
+  const sourceUrl = pickStandingsSourceUrl(record, seasonMeta.sourceUrl);
+  const fromUrl = resolveVerifiedStatBunkerSeasonFromUrl(sourceUrl);
+  if (fromUrl === null || fromUrl.season !== seasonMeta.season) return row;
+  return {
+    ...record,
+    season: seasonMeta.season,
+    source_url: fromUrl.sourceUrl,
+  };
+}

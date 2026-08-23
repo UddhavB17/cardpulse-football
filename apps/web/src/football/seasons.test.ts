@@ -8,6 +8,7 @@ import {
   buildSeasonOptions,
   isInProgressSeason,
   latestAvailableSeason,
+  latestCompleteSeason,
   parseSeasonKey,
   seasonLabel,
 } from "./seasons";
@@ -56,6 +57,10 @@ describe("selector options", () => {
     expect(latestAvailableSeason(["2023", "2024"])).toBe("2024");
     expect(latestAvailableSeason([])).toBeNull();
     expect(latestAvailableSeason(["2023", "2026"])).toBe("2026");
+  });
+
+  it("names the latest complete catalog season as the search fallback", () => {
+    expect(latestCompleteSeason()).toBe("2025");
   });
 
   it("exposes the exact unavailable-season message", () => {

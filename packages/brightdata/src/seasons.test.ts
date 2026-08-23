@@ -8,8 +8,11 @@ import {
   STATBUNKER_PLAYER_STANDINGS_BASE_URL,
   VERIFIED_STATBUNKER_SEASONS,
   isVerifiedStatBunkerSeason,
+  latestCompleteVerifiedStatBunkerSeason,
   listVerifiedStatBunkerSeasons,
   resolveVerifiedStatBunkerSeason,
+  resolveVerifiedStatBunkerSeasonFromUrl,
+  alignStandingsRowToVerifiedSeason,
   statBunkerPlayerSeasonMatchesUrl,
   statBunkerPlayerSearchResolverUrl,
   statBunkerPlayerStandingsUrl,
@@ -111,4 +114,64 @@ describe("resolveVerifiedStatBunkerSeason fails closed", () => {
       expect(isVerifiedStatBunkerSeason(raw)).toBe(false);
     },
   );
+});
+
+describe("verified competition URLs identify a registry season", () => {
+  it("maps PlayerStandings and SeasonMatches competition IDs", () => {
+    expect(
+      resolveVerifiedStatBunkerSeasonFromUrl(
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=791",
+      )?.season,
+    ).toBe("2026");
+    expect(
+      resolveVerifiedStatBunkerSeasonFromUrl(
+        "https://www.statbunker.com/players/SeasonMatches?comps_id=776&comps_type=EPL&player_id=60023",
+      )?.season,
+    ).toBe("2025");
+    expect(latestCompleteVerifiedStatBunkerSeason()?.season).toBe("2025");
+  });
+
+  it("fails closed for unknown hosts or unlisted competition IDs", () => {
+    expect(
+      resolveVerifiedStatBunkerSeasonFromUrl(
+        "https://example.test/competitions/PlayerStandings?comp_id=791",
+      ),
+    ).toBeNull();
+    expect(
+      resolveVerifiedStatBunkerSeasonFromUrl(
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=1",
+      ),
+    ).toBeNull();
+  });
+
+  it("replaces a stale hardcoded 2025 label when the row URL is 2026/27", () => {
+    const season2026 = resolveVerifiedStatBunkerSeason("2026");
+    expect(season2026).not.toBeNull();
+    if (season2026 === null) throw new Error("expected 2026 registry entry");
+    const aligned = alignStandingsRowToVerifiedSeason(
+      {
+        player_name: "Bukayo Saka",
+        season: "2025",
+        source_url:
+          "https://www.statbunker.com/competitions/PlayerStandings?comp_id=791",
+      },
+      season2026,
+    );
+    expect(aligned).toMatchObject({
+      season: "2026",
+      source_url: season2026.sourceUrl,
+    });
+  });
+
+  it("does not retarget a row whose URL is a different verified competition", () => {
+    const season2026 = resolveVerifiedStatBunkerSeason("2026");
+    expect(season2026).not.toBeNull();
+    if (season2026 === null) throw new Error("expected 2026 registry entry");
+    const row = {
+      season: "2025",
+      source_url:
+        "https://www.statbunker.com/competitions/PlayerStandings?comp_id=776",
+    };
+    expect(alignStandingsRowToVerifiedSeason(row, season2026)).toEqual(row);
+  });
 });

@@ -400,6 +400,27 @@ describe("generation, freshness, and single-collection guarantee", () => {
     expect(service.searchPlayers("haaland")).toEqual([]);
   });
 
+  it("indexes 2026/27 rows whose extractor still stamps the old 2025 season", async () => {
+    const collector = makeCollector([
+      statBunkerRow({
+        player_name: "Bukayo Saka",
+        team_name: "Arsenal",
+        season: "2025",
+        source_url: STANDINGS_URL_791,
+      }),
+    ]);
+    const service = makeService(collector.collect);
+    const refreshed = await service.refreshIndex("2026");
+    expect(refreshed).toMatchObject({
+      season: "2026",
+      acceptedCount: 1,
+      quarantinedCount: 0,
+    });
+    expect(service.searchPlayers("saka", { season: "2026" })[0]).toMatchObject({
+      playerName: "Bukayo Saka",
+    });
+  });
+
   it("serves a fresh cache hit without calling the collector", async () => {
     const { collector, service, result } = await generateHaalandOnce();
     expect(result.outcome).toBe("collected");

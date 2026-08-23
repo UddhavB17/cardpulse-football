@@ -23,6 +23,12 @@ export function isInProgressSeason(key: SeasonKey): boolean {
   return key === CURRENT_SEASON;
 }
 
+/** Newest catalog season that is not the in-progress campaign. */
+export function latestCompleteSeason(): SeasonKey {
+  const complete = SEASON_KEYS.filter((key) => key !== CURRENT_SEASON);
+  return complete.at(-1) ?? "2025";
+}
+
 /**
  * Accepts a raw season value from an API payload and maps it into the fixed
  * four-season catalog. Understands "2025", "2025/26" and "25/26" spellings.

@@ -339,6 +339,11 @@ export function createRequestHandler(
         }
       );
     }
+    if (remembered !== undefined && remembered.acceptedCount === 0) {
+      throw new SourceUnavailableError(
+        `The live ${metadata.label} player directory returned no verified rows`,
+      );
+    }
     const inFlight = indexRefreshes.get(season);
     if (inFlight !== undefined) return inFlight;
 
@@ -347,12 +352,12 @@ export function createRequestHandler(
     const refresh = playerExperience
       .refreshIndex(season)
       .then((result) => {
+        indexResults.set(season, result);
         if (result.acceptedCount === 0) {
           throw new SourceUnavailableError(
             `The live ${metadata.label} player directory returned no verified rows`,
           );
         }
-        indexResults.set(season, result);
         return result;
       })
       .catch((error: unknown) => {
@@ -504,8 +509,9 @@ export function createRequestHandler(
         }
         const query = url.searchParams.get("q") ?? "";
         const season = url.searchParams.get("season")?.trim();
+        const explicitSeason = season !== undefined && season !== "";
         if (
-          season !== undefined &&
+          explicitSeason &&
           !playerExperience
             .listSeasons()
             .some((entry) => entry.season === season)
@@ -518,14 +524,32 @@ export function createRequestHandler(
           sendJson(200, { data: [], generatedAt });
           return;
         }
-        const searchSeason =
-          season ?? playerExperience.listSeasons().at(-1)?.season;
+        let searchSeason = explicitSeason
+          ? season
+          : playerExperience.listSeasons().at(-1)?.season;
         if (searchSeason === undefined) {
           throw new SourceUnavailableError(
             "No verified StatBunker season is configured",
           );
         }
-        await ensureLiveIndex(searchSeason, req);
+        try {
+          await ensureLiveIndex(searchSeason, req);
+        } catch (error) {
+          const fallback = [...playerExperience.listSeasons()]
+            .reverse()
+            .find(
+              (entry) => entry.complete && entry.season !== searchSeason,
+            )?.season;
+          if (
+            explicitSeason ||
+            fallback === undefined ||
+            !(error instanceof SourceUnavailableError)
+          ) {
+            throw error;
+          }
+          await ensureLiveIndex(fallback, req);
+          searchSeason = fallback;
+        }
         sendJson(200, {
           data: playerExperience.searchPlayers(query, {
             season: searchSeason,

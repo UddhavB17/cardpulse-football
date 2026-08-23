@@ -11,6 +11,7 @@ import type {
   CardRecord,
   FootballApiClient,
   GenerateOutcome,
+  PlayerSearchResult,
 } from "./data-client";
 import { DataClientError, HttpFootballApiClient } from "./data-client";
 import {
@@ -34,12 +35,14 @@ import {
   type SearchOption,
 } from "./football/search";
 import {
+  CURRENT_SEASON,
   SEASON_KEYS,
   SEASON_UNAVAILABLE_MESSAGE,
   buildCompareDeltas,
   buildSeasonOptions,
   isInProgressSeason,
   latestAvailableSeason,
+  latestCompleteSeason,
   parseSeasonKey,
   seasonLabel,
   type StatTotalsLike,
@@ -74,7 +77,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 const POLL_INTERVAL_MS = 1_500;
 const MAX_POLLS = 40;
 const MAX_POLL_FAILURES = 3;
-const DEFAULT_INDEX_SEASON: SeasonKey = "2026";
+const DEFAULT_INDEX_SEASON: SeasonKey = CURRENT_SEASON;
 
 interface AppState {
   client: FootballApiClient;
@@ -112,9 +115,9 @@ const state: AppState = {
   searchOpen: false,
   searchActiveIndex: -1,
   selectedHit: null,
-  seasons: null,
+  seasons: new Set(SEASON_KEYS),
   seasonsError: null,
-  selectedSeason: null,
+  selectedSeason: CURRENT_SEASON,
   seasonLoading: false,
   seasonMessage: null,
   card: null,
@@ -355,14 +358,13 @@ function paintSeasons(): void {
   const note = qs("#season-note");
   if (wrap === null || note === null) return;
 
-  const known = state.seasons !== null && state.seasonsError === null;
-  const options = buildSeasonOptions(state.seasons ?? new Set());
+  const catalog = state.seasons ?? new Set(SEASON_KEYS);
+  const options = buildSeasonOptions(catalog);
   wrap.innerHTML = options
     .map((option) => {
       const checked = state.selectedSeason === option.key;
-      const disabled = !known || !option.available;
       return `<button type="button" role="radio" class="season-pill${checked ? " selected" : ""}"
-        aria-checked="${checked}" data-season="${option.key}" ${disabled ? "disabled" : ""}
+        aria-checked="${checked}" data-season="${option.key}"
         ${option.inProgress ? 'data-in-progress="true"' : ""}>
         ${escapeHtml(option.label)}${option.inProgress ? '<small aria-hidden="true">●</small>' : ""}
       </button>`;
@@ -371,10 +373,10 @@ function paintSeasons(): void {
 
   if (state.seasonsError !== null) {
     note.textContent = state.seasonsError;
-  } else if (!known && state.selectedHit !== null) {
-    note.textContent = "Checking available seasons…";
   } else if (state.seasonMessage !== null) {
     note.textContent = state.seasonMessage;
+  } else if (state.selectedHit === null) {
+    note.textContent = `Search uses ${seasonLabel(state.selectedSeason ?? CURRENT_SEASON)}. Pick another verified season if that directory is empty.`;
   } else if (
     state.selectedSeason !== null &&
     isInProgressSeason(state.selectedSeason)
@@ -751,13 +753,7 @@ function scheduleSearch(rawQuery: string): void {
 async function executeSearch(query: string): Promise<void> {
   const sequence = (searchSequence += 1);
   searchAbort = new AbortController();
-  try {
-    const payload = await state.client.searchPlayers(
-      query,
-      state.selectedSeason,
-      searchAbort.signal,
-    );
-    if (sequence !== searchSequence) return; // stale response
+  const applyHits = (payload: PlayerSearchResult): void => {
     state.searchFailed = false;
     state.searchLoading = false;
     state.searchHits = dedupeHits(
@@ -773,9 +769,51 @@ async function executeSearch(query: string): Promise<void> {
     ).map((hit, index) => ({ ...hit, id: optionId(index) }));
     state.searchOpen = true;
     state.searchActiveIndex = state.searchHits.length > 0 ? 0 : -1;
+  };
+  try {
+    const payload = await state.client.searchPlayers(
+      query,
+      state.selectedSeason,
+      searchAbort.signal,
+    );
+    if (sequence !== searchSequence) return;
+    applyHits(payload);
   } catch (error) {
     if (sequence !== searchSequence) return;
     if (error instanceof DOMException && error.name === "AbortError") return;
+    const fallback = latestCompleteSeason();
+    if (
+      error instanceof DataClientError &&
+      error.status === 503 &&
+      state.selectedSeason === CURRENT_SEASON &&
+      fallback !== CURRENT_SEASON
+    ) {
+      try {
+        const payload = await state.client.searchPlayers(
+          query,
+          fallback,
+          searchAbort.signal,
+        );
+        if (sequence !== searchSequence) return;
+        state.selectedSeason = fallback;
+        state.indexMessage = `${seasonLabel(CURRENT_SEASON)} has no verified player rows yet; searching ${seasonLabel(fallback)} instead.`;
+        applyHits(payload);
+        return;
+      } catch (fallbackError) {
+        if (sequence !== searchSequence) return;
+        if (
+          fallbackError instanceof DOMException &&
+          fallbackError.name === "AbortError"
+        ) {
+          return;
+        }
+        state.searchFailed = true;
+        state.searchLoading = false;
+        state.searchHits = [];
+        state.searchActiveIndex = -1;
+        return;
+      }
+    }
     state.searchFailed = true;
     state.searchLoading = false;
     state.searchHits = [];
@@ -784,6 +822,8 @@ async function executeSearch(query: string): Promise<void> {
     if (sequence === searchSequence) {
       searchAbort = null;
       paintSearchListbox();
+      paintSeasons();
+      paintLiveIndexStatus();
     }
   }
 }
@@ -798,10 +838,9 @@ async function selectHit(hit: SearchOption): Promise<void> {
   state.errorMessage = null;
   state.compareCard = null;
   state.compareNote = null;
-  state.seasons = null;
   state.seasonsError = null;
-  state.selectedSeason = null;
   state.seasonMessage = null;
+  const previousSeason = state.selectedSeason;
   const input = qs<HTMLInputElement>("#player-input");
   if (input !== null) input.value = hit.playerName;
   paintAll();
@@ -813,15 +852,18 @@ async function selectHit(hit: SearchOption): Promise<void> {
       const key = parseSeasonKey(raw);
       if (key !== null) available.add(key);
     }
-    state.seasons = available;
-    state.selectedSeason = latestAvailableSeason(available);
+    state.seasons = available.size > 0 ? available : new Set(SEASON_KEYS);
+    state.selectedSeason =
+      previousSeason !== null && available.has(previousSeason)
+        ? previousSeason
+        : (latestAvailableSeason(available) ?? previousSeason ?? CURRENT_SEASON);
     if (state.selectedSeason === null) {
       state.seasonMessage = `${SEASON_UNAVAILABLE_MESSAGE} No catalog season (${SEASON_KEYS.map(seasonLabel).join(", ")}) has verified data for this player.`;
     } else {
       await loadSeasonData(false);
     }
   } catch (error) {
-    state.seasons = null;
+    state.seasons = new Set(SEASON_KEYS);
     state.seasonsError = `${SEASON_UNAVAILABLE_MESSAGE} (${errorMessage(error)})`;
   }
   paintAll();
@@ -924,11 +966,13 @@ async function hydrateSourceHealth(sourceId: string | null): Promise<void> {
 async function onSeasonChange(rawKey: string): Promise<void> {
   const key = parseSeasonKey(rawKey);
   if (key === null || key === state.selectedSeason) return;
-  if (state.seasons !== null && !state.seasons.has(key)) return;
   state.selectedSeason = key;
   state.errorMessage = null;
   if (state.selectedHit !== null) await loadSeasonData(true);
-  else paintAll();
+  else if (isSearchableQuery(normalizeQuery(state.searchQuery))) {
+    paintAll();
+    await executeSearch(normalizeQuery(state.searchQuery));
+  } else paintAll();
 }
 
 // ---------------------------------------------------------------------------
@@ -940,6 +984,7 @@ async function prepareLiveIndex(): Promise<void> {
   const client = createLiveClient();
   state.client = client;
   state.indexRefreshing = true;
+  state.selectedSeason = DEFAULT_INDEX_SEASON;
   state.indexMessage = `Preparing the live ${seasonLabel(DEFAULT_INDEX_SEASON)} player directory with Bright Data…`;
   state.errorMessage = null;
   paintAll();
@@ -951,7 +996,23 @@ async function prepareLiveIndex(): Promise<void> {
     const query = normalizeQuery(state.searchQuery);
     if (isSearchableQuery(query)) await executeSearch(query);
   } catch (error) {
-    state.indexMessage = `Live directory unavailable right now; searching will retry automatically. ${errorMessage(error)}`;
+    const fallback = latestCompleteSeason();
+    state.indexMessage = `${seasonLabel(DEFAULT_INDEX_SEASON)} has no verified rows yet. ${errorMessage(error)}`;
+    if (fallback !== DEFAULT_INDEX_SEASON) {
+      try {
+        state.indexMessage = `${seasonLabel(DEFAULT_INDEX_SEASON)} is empty; preparing ${seasonLabel(fallback)} instead…`;
+        paintLiveIndexStatus();
+        const result = await client.refreshPlayerIndex(fallback);
+        state.selectedSeason = fallback;
+        state.indexMessage = `${seasonLabel(DEFAULT_INDEX_SEASON)} has no verified rows yet. ${result.indexedPlayerCount} verified player${
+          result.indexedPlayerCount === 1 ? "" : "s"
+        } ready for ${seasonLabel(fallback)}.`;
+        const query = normalizeQuery(state.searchQuery);
+        if (isSearchableQuery(query)) await executeSearch(query);
+      } catch (fallbackError) {
+        state.indexMessage = `Live directory unavailable right now; searching will retry automatically. ${errorMessage(fallbackError)}`;
+      }
+    }
   } finally {
     state.indexRefreshing = false;
     paintAll();

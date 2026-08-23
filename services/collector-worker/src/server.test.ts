@@ -829,6 +829,65 @@ describe("searchable player-card HTTP flow", () => {
     }
   });
 
+  it("falls back a season-less search to 2025/26 when 2026/27 has no verified rows", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = request.targetUrl.includes("comp_id=776")
+          ? [statBunkerHaalandRow()]
+          : [];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-empty-2026-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime);
+
+    try {
+      const explicitEmpty = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2026`,
+      );
+      expect(explicitEmpty.status).toBe(503);
+      expect(await explicitEmpty.json()).toMatchObject({
+        error: {
+          message:
+            "The live 2026/27 player directory returned no verified rows",
+        },
+      });
+
+      const fallback = await fetch(`${baseUrl}/api/search/players?q=haaland`);
+      expect(fallback.status).toBe(200);
+      const body = (await fallback.json()) as {
+        data: Array<{ playerName: string }>;
+      };
+      expect(body.data).toEqual([
+        expect.objectContaining({ playerName: "Erling Haaland" }),
+      ]);
+      expect(
+        collect.mock.calls.some((call) =>
+          String(call[0]?.targetUrl).includes("comp_id=791"),
+        ),
+      ).toBe(true);
+      expect(
+        collect.mock.calls.some((call) =>
+          String(call[0]?.targetUrl).includes("comp_id=776"),
+        ),
+      ).toBe(true);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
   it("returns 202 immediately and exposes real scrape stages while work runs", async () => {
     const runtime = liveStatBunkerRuntime();
     const observedAt = "2026-08-23T09:00:00.000Z";

@@ -37,6 +37,7 @@ import {
   STATBUNKER_PLAYER_SEARCH_BASE_URL,
   StatBunkerMatchRowMapper,
   StatBunkerRowMapper,
+  alignStandingsRowToVerifiedSeason,
   listVerifiedStatBunkerSeasons,
   resolveVerifiedStatBunkerSeason,
   statBunkerPlayerSearchResolverUrl,
@@ -559,12 +560,13 @@ export class PlayerExperienceService {
     });
     const observedAt = iso(this.#now());
     const mappedRows = batch.rawRows.map((rawRow) => {
-      const mapped = this.#rowMapper.map(rawRow, observedAt);
+      const aligned = alignStandingsRowToVerifiedSeason(rawRow, seasonMeta);
+      const mapped = this.#rowMapper.map(aligned, observedAt);
       return mapped.ok &&
         mapped.record.entityType === "player" &&
         mapped.record.season === seasonMeta.season
         ? mapped.record
-        : rawRow;
+        : aligned;
     });
     const results = await this.pipeline.processBatchWithHealing(
       mappedRows,
