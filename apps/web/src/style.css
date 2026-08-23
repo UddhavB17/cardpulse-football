@@ -935,6 +935,7 @@ p {
    -------------------------------------------------------------------------- */
 
 .console {
+  min-width: 0;
   border: var(--border-heavy);
   background: var(--card-paper);
   box-shadow: var(--shadow-hard);
@@ -967,6 +968,8 @@ p {
 
 .rail {
   display: grid;
+  width: 100%;
+  min-width: 0;
   grid-template-columns: repeat(5, 1fr);
   margin: 0;
   padding: 0;
@@ -1713,7 +1716,7 @@ tbody tr.flipping {
 @media (max-width: 1020px) {
   .hero-copy,
   .matchday {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 34px;
   }
 

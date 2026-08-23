@@ -96,6 +96,13 @@ describe("standings engine", () => {
       boosted.filter((row) => !row.isHeroClub).map((row) => row.points),
     ).toEqual(base.filter((row) => !row.isHeroClub).map((row) => row.points));
   });
+
+  it("never highlights a real provider club inside the fictional table", () => {
+    // A live hero card (e.g. Arsenal) must not appear to play in the
+    // simulated league — only fictional codes can be highlighted.
+    const table = buildSeasonTable("cardpulse-2526", "ARS", 3);
+    expect(table.some((row) => row.isHeroClub)).toBe(false);
+  });
 });
 
 describe("order shifts", () => {

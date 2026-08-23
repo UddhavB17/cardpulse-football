@@ -16,6 +16,9 @@ import {
   isCompromisedState,
   resolveDataLabel,
   resolveModeChip,
+  resolveStandingsMode,
+  resolveTeamSectionState,
+  standingsTableCopy,
   type PlayerSummaryLike,
 } from "./mapping";
 
@@ -25,6 +28,16 @@ const runtime = {
   collectorConfigured: false,
   targetConfigured: false,
   liveMutationsEnabled: false,
+  configurationIssues: [],
+};
+
+// Live StatBunker EPL 25/26 runtime: player-rows-only collector.
+const statbunkerLiveRuntime = {
+  mode: "live" as const,
+  sourceId: "statbunker-epl-2025-26",
+  collectorConfigured: true,
+  targetConfigured: true,
+  liveMutationsEnabled: true,
   configurationIssues: [],
 };
 
@@ -329,5 +342,170 @@ describe("adapter boundary", () => {
     await expect(client.load()).rejects.toMatchObject({
       name: "DataClientError",
     });
+  });
+});
+
+describe("StatBunker live-data compatibility", () => {
+  // Realistic canonical StatBunker EPL 2025/26 record: real names, full stat
+  // line, player-rows-only source id.
+  const statbunkerPlayer: PlayerSummaryLike = {
+    playerId: "statbunker-epl-2025-26:player:declan-rice",
+    sourceId: "statbunker-epl-2025-26",
+    playerName: "Declan Rice",
+    team: { teamId: "statbunker-epl-2025-26:team:arsenal", name: "Arsenal" },
+    position: "midfielder",
+    shirtNumber: 41,
+    season: "2025",
+    stats: {
+      appearances: 13,
+      goals: 2,
+      assists: 4,
+      yellowCards: 3,
+      redCards: 0,
+      minutesPlayed: 1130,
+    },
+    observedAt: "2026-08-21T17:30:00.000Z",
+    latestSnapshot: {
+      snapshotId: "9c1f4a52-6d0e-4a7a-8f3e-2b1c5d7e9a01",
+      version: 3,
+    },
+  };
+
+  const statbunkerSource = {
+    sourceId: "statbunker-epl-2025-26",
+    state: "healthy",
+    checkedAt: "2026-08-21T17:31:00.000Z",
+    lastSuccessfulAt: "2026-08-21T17:30:00.000Z",
+    consecutiveFailures: 0,
+    recentFailureRate: 0,
+    activeIncident: null,
+    latestRecoveryEvidence: null,
+  };
+
+  it("renders the hero card from a canonical record with honest provenance", () => {
+    const card = buildPlayerCard(statbunkerPlayer, "c_statbunker_epl_9f3a17");
+    if (card === null) throw new Error("Canonical record must produce a card");
+
+    expect(card.playerName).toBe("Declan Rice");
+    expect(card.clubName).toBe("Arsenal");
+    expect(card.clubCode).toBe("ARS");
+    expect(card.positionDisplay).toBe("MID");
+    expect(card.seasonLabel).toBe("SEASON 2025/26");
+    expect(card.attributes.map((a) => `${a.label}:${a.value}`)).toEqual([
+      "GOALS:2",
+      "ASSISTS:4",
+      "APPEARANCES:13",
+      "MINUTES:1130",
+    ]);
+    expect(card.attributes.every((a) => a.pct > 0 && a.pct <= 100)).toBe(true);
+    expect(card.provenance.sourceId).toBe("statbunker-epl-2025-26");
+    expect(card.provenance.snapshotVersion).toBe(3);
+    // Collector identity stays visible but redacted.
+    expect(card.provenance.collectorIdRedacted).toBe("c_st••••3a17");
+    expect(card.provenance.collectorIdRedacted).not.toContain("tatbunker");
+  });
+
+  it("labels StatBunker output live only when the runtime reports live", () => {
+    expect(resolveDataLabel(statbunkerLiveRuntime, false)).toBe(
+      "LIVE PROVIDER",
+    );
+    expect(resolveModeChip(statbunkerLiveRuntime, false)).toBe("LIVE PROVIDER");
+    // The fixture fallback must never borrow the provider's language.
+    expect(resolveDataLabel(statbunkerLiveRuntime, true)).toBe("DEMO DATA");
+    expect(resolveModeChip(statbunkerLiveRuntime, true)).toBe("MOCK PIPELINE");
+  });
+
+  it("falls back to source-integrity cards while team metadata stays empty", () => {
+    const section = resolveTeamSectionState({
+      teams: [],
+      sources: [statbunkerSource],
+      playerCount: 14,
+    });
+    if (section.kind !== "source-cards") {
+      throw new Error(`Expected source-cards, received ${section.kind}`);
+    }
+    expect(section.clubs).toHaveLength(1);
+    expect(section.clubs[0]?.sourceId).toBe("statbunker-epl-2025-26");
+    expect(section.clubs[0]?.clubCode).toBe("STA");
+    expect(section.clubs[0]?.state).toBe("healthy");
+  });
+
+  it("explains player-only collectors instead of looking broken", () => {
+    const section = resolveTeamSectionState({
+      teams: [],
+      sources: [],
+      playerCount: 14,
+    });
+    if (section.kind !== "player-only") {
+      throw new Error(`Expected player-only, received ${section.kind}`);
+    }
+    expect(section.note).toMatch(/player rows only/i);
+    expect(section.note).toMatch(/expected/i);
+    expect(section.note).toContain("14");
+    // The stale run-the-pipeline hint would look broken here.
+    expect(section.note).not.toMatch(/run the pipeline/i);
+  });
+
+  it("keeps the run-the-pipeline hint for genuinely empty dashboards", () => {
+    const section = resolveTeamSectionState({
+      teams: [],
+      sources: [],
+      playerCount: 0,
+    });
+    if (section.kind !== "empty") {
+      throw new Error(`Expected empty, received ${section.kind}`);
+    }
+    expect(section.note).toMatch(/run the pipeline once/i);
+  });
+
+  it("renders real team cards whenever the collector does supply them", () => {
+    const section = resolveTeamSectionState({
+      teams: [
+        {
+          teamId: "statbunker-epl-2025-26:team:arsenal",
+          sourceId: "statbunker-epl-2025-26",
+          name: "Arsenal",
+          shortName: null,
+          city: null,
+          stadium: null,
+          coach: null,
+          founded: null,
+          observedAt: "2026-08-21T17:30:00.000Z",
+          latestSnapshot: {
+            snapshotId: statbunkerPlayer.latestSnapshot.snapshotId,
+            version: 3,
+          },
+        },
+      ],
+      sources: [statbunkerSource],
+      playerCount: 14,
+    });
+    if (section.kind !== "team-cards") {
+      throw new Error(`Expected team-cards, received ${section.kind}`);
+    }
+    expect(section.teams).toHaveLength(1);
+    expect(section.teams[0]?.name).toBe("Arsenal");
+    expect(section.teams[0]?.state).toBe("healthy");
+  });
+});
+
+describe("standings labelling", () => {
+  it("requires both provider rows and a live provider runtime", () => {
+    expect(resolveStandingsMode(0)).toBe("simulated");
+    expect(resolveStandingsMode(20)).toBe("provider");
+    expect(resolveStandingsMode(20, false)).toBe("simulated");
+  });
+
+  it("keeps simulated copy unmistakably demo even under a live runtime", () => {
+    const copy = standingsTableCopy("simulated");
+    expect(copy.caption.toLowerCase()).toContain("simulated");
+    expect(copy.note).toMatch(/demo data/);
+    expect(`${copy.caption}\n${copy.note}`).not.toMatch(/provider/i);
+  });
+
+  it("marks provider-backed tables explicitly", () => {
+    const copy = standingsTableCopy("provider");
+    expect(copy.caption).toMatch(/provider-synced/);
+    expect(copy.note).toMatch(/verified standings snapshot/);
   });
 });
