@@ -828,6 +828,7 @@ function paintLiveIndexStatus(): void {
 function paintAll(): void {
   // Chrome glitch is bound strictly to real in-flight work.
   app.classList.toggle("is-busy", isBusy());
+  app.classList.toggle("has-card", state.card !== null);
   paintTopbar();
   paintSearchListbox();
   paintSeasons();

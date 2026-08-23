@@ -68,6 +68,17 @@
   opacity: 0.4;
 }
 
+/* Design-system busy/print opacity is leftover; pointer foil stays at rest strength. */
+.is-busy .holo-layer,
+.just-printed .holo-layer {
+  opacity: 0.55;
+}
+
+.is-busy .face-back .holo-layer,
+.just-printed .face-back .holo-layer {
+  opacity: 0.4;
+}
+
 /* One-shot reveal also throws a single foil sweep across the fresh card. */
 .flip-card.reveal-once .holo-layer {
   animation: holo-sweep 560ms ease-out both;

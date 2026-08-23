@@ -165,6 +165,19 @@ describe("card-effects.css contract", () => {
     );
   });
 
+  it("toggles generated-card layout from real card presence", () => {
+    expect(main).toContain(
+      'app.classList.toggle("has-card", state.card !== null)',
+    );
+  });
+
+  it("keeps the provenance drawer collapsed in the judging view", () => {
+    expect(main).toMatch(
+      /<details class="drawer reveal" id="provenance-drawer">/,
+    );
+    expect(main).not.toMatch(/id="provenance-drawer"[^>]*\sopen/);
+  });
+
   it("uses a real holo layer element driven by --holo-x/--holo-y", () => {
     expect(css).toContain(".holo-layer");
     expect(css).toContain("--holo-x");
