@@ -23,13 +23,13 @@ Environment:
 ```text
 HOST=0.0.0.0
 CARDPULSE_ALLOWED_ORIGINS=https://<your-static-site>.onrender.com
-CARDPULSE_SOURCE_ID=statbunker-epl-2025-26
+CARDPULSE_SOURCE_ID=statbunker-premier-league
 CARDPULSE_SOURCE_PROFILE=statbunker
 CARDPULSE_ENABLE_LIVE_MUTATIONS=true
-BRIGHT_DATA_TARGET_URL=https://www.statbunker.com/competitions/PlayerStandings?comp_id=776
+BRIGHT_DATA_TARGET_URL=https://www.statbunker.com/competitions/PlayerStandings?comp_id=791
 BRIGHT_DATA_API_TOKEN=<secret>
 BRIGHT_DATA_COLLECTOR_ID=<secret c_* collector ID>
-CARDPULSE_OPERATOR_TOKEN=<private random value of at least 32 characters>
+CARDPULSE_OPERATOR_TOKEN=<server-only admin secret of at least 32 characters>
 ```
 
 Render supplies `PORT`; do not hardcode it. The server validates the port,
@@ -49,9 +49,15 @@ If either Render service gets a different hostname, update both
 `VITE_API_BASE_URL` and `CARDPULSE_ALLOWED_ORIGINS`, then redeploy the static
 site so Vite embeds the corrected API URL.
 
+The browser never receives or asks for `CARDPULSE_OPERATOR_TOKEN`. Public index
+preparation and card generation are enabled by the server-side live-mutation
+switch and protected with caching, in-flight deduplication, and per-client rate
+limits. The token remains required only for admin/healing mutation routes.
+
 ## Operational limitation
 
 The current MVP keeps its player index and generated cards in process memory.
-A backend restart or free-tier sleep starts with an empty index. Refresh the
-desired season after a restart before searching. Use an always-on instance for
-a judge session if losing that in-memory state would interrupt the demo.
+A backend restart or free-tier sleep starts cold, but the web app immediately
+prepares 2026/27 and the first concurrent search shares that same Bright Data
+run. Use an always-on instance for the smoothest judge session and to preserve
+warm caches between visits.

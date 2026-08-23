@@ -8,14 +8,15 @@ branch — a searchable Premier League card generator on top of both.
 
 ```mermaid
 flowchart LR
-  Query[Player search query] --> Idx[Local cached player index]
-  Refresh[Explicit protected season refresh] --> BD
+  Query[Player or club query] --> Ready{season index ready?}
+  Ready -->|yes| Idx[Validated cached player index]
+  Ready -->|no: one deduplicated preparation| BD[Bright Data collector c_*]
   BD --> Idx
   Idx --> Pick[player + verified season]
   Pick --> Gen{Explicit generate}
   Gen -->|cache hit| Snap[Existing validated snapshot]
   Gen -->|cache miss / forced refresh| Resolve{numeric player ID cached?}
-  Resolve -->|yes| BD[Bright Data collector c_*]
+  Resolve -->|yes| BD
   Resolve -->|no: exact-name input| BD
   BD --> Rows[Raw row batch]
   Rows --> Map[Football row mapper]
@@ -40,9 +41,11 @@ flowchart LR
 
 The one-player demo became search → season → generate:
 
-- **Search index.** Player name lookup is served from a local cached index
-  built from already-collected data. It never calls Bright Data per keystroke;
-  typing is free and offline-safe.
+- **Search index.** Player and club lookup is served from a validated local
+  cache. On a cold process, page load or the first real query automatically
+  prepares the current verified season through Bright Data. Concurrent calls
+  share that one preparation; later keystrokes never trigger one provider run
+  each.
 - **Season registry.** Only the verified StatBunker Premier League seasons are
   selectable (2023/24 `comp_id=745`, 2024/25 `596`, 2025/26 `776`,
   2026/27 `791` at
@@ -69,10 +72,11 @@ The one-player demo became search → season → generate:
 Cached cards are previously collected snapshots, not guesses: a hit serves the
 last validated snapshot with its original provenance (source URL, season,
 snapshot version, hash, observed time), and staleness is shown, not hidden.
-An explicit protected index refresh and a stale/missing generation are the
-only billable paths; both go through the same validation, quarantine, and
-batch-level healing gates as any live run. Freshness is checked on an explicit
-Generate action with a default 15-minute TTL; there is no background scheduler.
+Automatic season-index preparation and a stale/missing generation are the only
+billable paths; both are cached, deduplicated, rate-limited, and pass through
+the same validation, quarantine, and batch-level healing gates as any live run.
+Freshness is checked on an explicit Generate action with a default 15-minute
+TTL; there is no in-match background scheduler.
 Because StatBunker updates after match completion, CardPulse is post-match
 freshness rather than second-by-second score tracking.
 
@@ -152,7 +156,7 @@ Consumes the typed API and renders the searchable card experience: ARIA
 combobox player search, verified-season picker, front/back cards with explicit
 flip, season comparison, run-status display, team summaries, standings,
 provenance, quarantine, healing state, and recovery evidence. The browser UI is
-live-operator only, refuses demo-marked card payloads, honors
+zero-credential and live-only, refuses demo-marked card payloads, honors
 `prefers-reduced-motion`, and works by keyboard and touch without photos, logos,
 or shot coordinates.
 
@@ -168,10 +172,10 @@ the line between a live collection and a cache hit.
 
 - State is in memory and resets when the process stops.
 - There is no scheduler, durable queue/database, account system, or alerting.
-- Live mutations require an explicit flag and a strong operator token; these
-  controls are still local hackathon surfaces, not production authentication.
-- Provider credentials are environment-only. The operator token may be entered
-  into the local browser UI; it stays in tab memory, is sent only on protected
-  mutations, and is never included in response bodies or persistent storage.
+- Public live index preparation and generation require an explicit server-side
+  flag and are cached, deduplicated, and rate-limited per client.
+- Provider credentials and the strong admin token are environment-only. The
+  browser never receives or requests them; the token protects only separate
+  healing and development mutation routes.
 - Tests use deterministic providers. Live Bright Data behavior needs a
   separately captured credentialed evidence trail before it is claimed.

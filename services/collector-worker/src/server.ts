@@ -27,7 +27,10 @@ import { demoRecordsFor } from "@bidsentinel/contracts/fixtures";
 import { hashPayload } from "@bidsentinel/validation";
 import type { CardPulsePipeline } from "./pipeline.js";
 import type { SelfHealingCoordinator } from "./healing-coordinator.js";
-import { PlayerExperienceService } from "./player-experience.js";
+import {
+  PlayerExperienceService,
+  type PlayerExperienceIndexRefreshResult,
+} from "./player-experience.js";
 import {
   createRuntimeFromEnv,
   isAuthorizedOperatorToken,
@@ -37,6 +40,8 @@ import {
 
 const MOCK_DEV_COLLECTOR_ID = "c_mock_cardpulse";
 const OPERATOR_HEADERS = ["x-cardpulse-operator-token"] as const;
+const DEFAULT_PUBLIC_SCRAPE_LIMIT = 12;
+const DEFAULT_PUBLIC_SCRAPE_WINDOW_MS = 10 * 60 * 1_000;
 const LOCAL_ALLOWED_ORIGINS = [
   "http://localhost:4173",
   "http://127.0.0.1:4173",
@@ -47,6 +52,9 @@ const LOCAL_ALLOWED_ORIGINS = [
 
 export interface RequestHandlerOptions {
   allowedOrigins?: ReadonlySet<string>;
+  publicScrapeLimit?: number;
+  publicScrapeWindowMs?: number;
+  nowMs?: () => number;
 }
 
 export function resolveAllowedOrigins(
@@ -138,6 +146,26 @@ class ForbiddenError extends HttpError {
   constructor(message: string) {
     super("forbidden", 403, message);
   }
+}
+
+class RateLimitedError extends HttpError {
+  constructor(message: string) {
+    super("rate_limited", 429, message);
+  }
+}
+
+class SourceUnavailableError extends HttpError {
+  constructor(message: string) {
+    super("source_unavailable", 503, message);
+  }
+}
+
+function requestClientKey(req: IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const firstForwarded = Array.isArray(forwarded)
+    ? forwarded[0]
+    : forwarded?.split(",")[0];
+  return firstForwarded?.trim() || req.socket.remoteAddress || "unknown";
 }
 
 function decodePathSegment(value: string): string {
@@ -240,6 +268,107 @@ export function createRequestHandler(
   playerExperience.indexPlayers(
     latestSnapshotsOfType(activeRuntime.pipeline, "player"),
   );
+  const indexResults = new Map<string, PlayerExperienceIndexRefreshResult>();
+  const indexRefreshes = new Map<
+    string,
+    Promise<PlayerExperienceIndexRefreshResult>
+  >();
+  const publicScrapeBuckets = new Map<
+    string,
+    { windowStartedAt: number; count: number }
+  >();
+  const publicScrapeLimit =
+    options.publicScrapeLimit ?? DEFAULT_PUBLIC_SCRAPE_LIMIT;
+  const publicScrapeWindowMs =
+    options.publicScrapeWindowMs ?? DEFAULT_PUBLIC_SCRAPE_WINDOW_MS;
+  const nowMs = options.nowMs ?? Date.now;
+
+  const requirePublicLiveScraping = () => {
+    if (activeRuntime.mode !== "live") {
+      throw new ConflictError(
+        "Live scraping is unavailable while the API is in mock mode",
+      );
+    }
+    if (!activeRuntime.liveMutationsEnabled) {
+      throw new ForbiddenError(
+        "Live scraping is disabled in the server configuration",
+      );
+    }
+  };
+
+  const consumePublicScrapeAllowance = (req: IncomingMessage) => {
+    const key = requestClientKey(req);
+    const at = nowMs();
+    const current = publicScrapeBuckets.get(key);
+    if (
+      current === undefined ||
+      at - current.windowStartedAt >= publicScrapeWindowMs
+    ) {
+      publicScrapeBuckets.set(key, { windowStartedAt: at, count: 1 });
+      return;
+    }
+    if (current.count >= publicScrapeLimit) {
+      throw new RateLimitedError(
+        "Too many live scrape requests. Please wait a few minutes and try again.",
+      );
+    }
+    current.count += 1;
+  };
+
+  const ensureLiveIndex = async (
+    season: string,
+    req: IncomingMessage,
+  ): Promise<PlayerExperienceIndexRefreshResult> => {
+    const metadata = playerExperience
+      .listSeasons()
+      .find((entry) => entry.season === season);
+    if (metadata === undefined) {
+      throw new BadRequestError(
+        `Season "${season}" is not in the verified StatBunker registry`,
+      );
+    }
+    const remembered = indexResults.get(season);
+    if (playerExperience.hasIndexedSeason(season)) {
+      return (
+        remembered ?? {
+          season,
+          sourceUrl: metadata.sourceUrl,
+          acceptedCount: 0,
+          quarantinedCount: 0,
+          indexedPlayerCount: playerExperience.getIndexedPlayerCount(),
+        }
+      );
+    }
+    const inFlight = indexRefreshes.get(season);
+    if (inFlight !== undefined) return inFlight;
+
+    requirePublicLiveScraping();
+    consumePublicScrapeAllowance(req);
+    const refresh = playerExperience
+      .refreshIndex(season)
+      .then((result) => {
+        if (result.acceptedCount === 0) {
+          throw new SourceUnavailableError(
+            `The live ${metadata.label} player directory returned no verified rows`,
+          );
+        }
+        indexResults.set(season, result);
+        return result;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof HttpError) throw error;
+        throw new SourceUnavailableError(
+          error instanceof Error
+            ? `Could not prepare the live ${metadata.label} player directory: ${error.message}`
+            : `Could not prepare the live ${metadata.label} player directory`,
+        );
+      })
+      .finally(() => {
+        indexRefreshes.delete(season);
+      });
+    indexRefreshes.set(season, refresh);
+    return refresh;
+  };
   const requestedHealingSourceId = (url: URL): string => {
     const requested = url.searchParams.get("sourceId")?.trim();
     if (requested === undefined || requested === "") {
@@ -385,9 +514,21 @@ export function createRequestHandler(
             `Season "${season}" is not in the verified StatBunker registry`,
           );
         }
+        if (query.trim().length < 2) {
+          sendJson(200, { data: [], generatedAt });
+          return;
+        }
+        const searchSeason =
+          season ?? playerExperience.listSeasons().at(-1)?.season;
+        if (searchSeason === undefined) {
+          throw new SourceUnavailableError(
+            "No verified StatBunker season is configured",
+          );
+        }
+        await ensureLiveIndex(searchSeason, req);
         sendJson(200, {
           data: playerExperience.searchPlayers(query, {
-            ...(season === undefined ? {} : { season }),
+            season: searchSeason,
           }),
           generatedAt,
         });
@@ -398,12 +539,7 @@ export function createRequestHandler(
         if (req.method !== "POST") {
           throw new MethodNotAllowedError("Method not allowed");
         }
-        if (activeRuntime.mode !== "live") {
-          throw new ConflictError(
-            "Live player-index refresh is unavailable in explicit mock mode",
-          );
-        }
-        requireLiveMutationAuthorization();
+        requirePublicLiveScraping();
         const raw = await parseJsonBody(req);
         if (
           raw === null ||
@@ -425,7 +561,7 @@ export function createRequestHandler(
             `Season "${season}" is not in the verified StatBunker registry`,
           );
         }
-        const refreshed = await playerExperience.refreshIndex(season);
+        const refreshed = await ensureLiveIndex(season, req);
         sendJson(200, { data: refreshed, generatedAt });
         return;
       }
@@ -434,12 +570,7 @@ export function createRequestHandler(
         if (req.method !== "POST") {
           throw new MethodNotAllowedError("Method not allowed");
         }
-        if (activeRuntime.mode !== "live") {
-          throw new ConflictError(
-            "Live card generation is unavailable while the API is in mock mode; configure the live provider before using operator controls",
-          );
-        }
-        requireLiveMutationAuthorization();
+        requirePublicLiveScraping();
         const raw = await parseJsonBody(req);
         if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
           throw new BadRequestError("Request body must be a JSON object");
@@ -463,7 +594,21 @@ export function createRequestHandler(
         if (!parsed.success) {
           throw new BadRequestError("Invalid player card generation request");
         }
-        const start = playerExperience.startGenerate(parsed.data);
+        await ensureLiveIndex(parsed.data.season, req);
+        const resolvedPlayerId = playerExperience.resolvePlayerIdForSeason(
+          parsed.data.playerId,
+          parsed.data.season,
+        );
+        if (resolvedPlayerId === null) {
+          throw new BadRequestError(
+            "That player could not be matched unambiguously in the selected season",
+          );
+        }
+        consumePublicScrapeAllowance(req);
+        const start = playerExperience.startGenerate({
+          ...parsed.data,
+          playerId: resolvedPlayerId,
+        });
         if (start.kind === "immediate") {
           if (start.result.outcome === "failed") {
             throw new BadRequestError(
@@ -533,7 +678,10 @@ export function createRequestHandler(
         const playerId = decodePathSegment(seasonsMatch[1] ?? "");
         const seasons = playerExperience.getPlayerSeasons(playerId);
         if (seasons.length === 0) throw new NotFoundError("Player not found");
-        sendJson(200, { data: seasons, generatedAt });
+        sendJson(200, {
+          data: playerExperience.listSeasons().map((entry) => entry.season),
+          generatedAt,
+        });
         return;
       }
 

@@ -567,6 +567,27 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
+function mergeAbortSignals(
+  timeoutMs: number,
+  external?: AbortSignal,
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (external === undefined) return timeoutSignal;
+
+  const controller = new AbortController();
+  const abort = (): void => {
+    if (controller.signal.aborted) return;
+    controller.abort(external.aborted ? external.reason : timeoutSignal.reason);
+  };
+  if (external.aborted || timeoutSignal.aborted) {
+    abort();
+    return controller.signal;
+  }
+  external.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
 export interface GenerateRequest {
   playerId: string;
   season: string;
@@ -577,6 +598,7 @@ export interface FootballApiClient {
   searchPlayers(
     query: string,
     season: string | null,
+    signal?: AbortSignal,
   ): Promise<PlayerSearchResult>;
   getPlayerSeasons(playerId: string): Promise<PlayerSeasonsResult>;
   getPlayerMatches(
@@ -596,26 +618,22 @@ export interface FootballApiClient {
 // ---------------------------------------------------------------------------
 
 export class HttpFootballApiClient implements FootballApiClient {
-  private operatorToken = "";
-
   constructor(
     private readonly baseUrl = "",
     private readonly fetchFn: FetchLike = (input, init) => fetch(input, init),
   ) {}
 
-  setOperatorToken(value: string): void {
-    this.operatorToken = value;
-  }
-
   async searchPlayers(
     query: string,
     season: string | null,
+    signal?: AbortSignal,
   ): Promise<PlayerSearchResult> {
     const params = new URLSearchParams({ q: query });
     if (season !== null) params.set("season", season);
     const body = await this.get(
       `/api/search/players?${params.toString()}`,
-      8_000,
+      150_000,
+      signal,
     );
     return normalizeSearchPayload(body);
   }
@@ -671,9 +689,6 @@ export class HttpFootballApiClient implements FootballApiClient {
       headers: {
         accept: "application/json",
         "content-type": "application/json",
-        ...(this.operatorToken === ""
-          ? {}
-          : { "X-CardPulse-Operator-Token": this.operatorToken }),
       },
       body: JSON.stringify(request),
       timeoutMs: 45_000,
@@ -687,9 +702,6 @@ export class HttpFootballApiClient implements FootballApiClient {
       headers: {
         accept: "application/json",
         "content-type": "application/json",
-        ...(this.operatorToken === ""
-          ? {}
-          : { "X-CardPulse-Operator-Token": this.operatorToken }),
       },
       body: JSON.stringify({ season }),
       timeoutMs: 150_000,
@@ -763,11 +775,16 @@ export class HttpFootballApiClient implements FootballApiClient {
     };
   }
 
-  private async get(path: string, timeoutMs: number): Promise<unknown> {
+  private async get(
+    path: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const { status, body } = await this.request(path, {
       method: "GET",
       headers: { accept: "application/json" },
       timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
     });
     if (!(status >= 200 && status < 300) && status !== 202) {
       throw new DataClientError(`API request failed (${status})`, status);
@@ -782,18 +799,25 @@ export class HttpFootballApiClient implements FootballApiClient {
       headers: Record<string, string>;
       timeoutMs: number;
       body?: string;
+      signal?: AbortSignal;
     },
   ): Promise<{ status: number; body: unknown }> {
     const requestInit: RequestInit = {
       method: options.method,
       headers: options.headers,
-      signal: AbortSignal.timeout(options.timeoutMs),
+      signal: mergeAbortSignals(options.timeoutMs, options.signal),
     };
     if (options.body !== undefined) requestInit.body = options.body;
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException("The operation was aborted.", "AbortError");
+    }
     let response: Response;
     try {
       response = await this.fetchFn(joinUrl(this.baseUrl, path), requestInit);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       throw new DataClientError(
         error instanceof Error
           ? `Could not reach the CardPulse API: ${error.message}`

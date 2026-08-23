@@ -34,17 +34,18 @@ Chaos modes are `baseline-table`, `drift-cards`, `amended-stats`, and
 
 ## Searchable card flow
 
-The browser workflow is live-operator only. A new API process has an empty live
-index until an authorized refresh:
+The browser has no credential step. A configured live process automatically
+prepares the current 2026/27 index on page load or first search:
 
 ```bash
-curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data' # [] before refresh
+curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data' # prepares once when cold
 curl -s http://127.0.0.1:4321/api/seasons | jq '[.data[].compId]'   # 745, 596, 776, 791
 ```
 
-Search reads a local cached index. Open **Live operator controls**
-in the browser and explicitly refresh one verified season before searching;
-the refresh and a stale/missing generation are protected billable mutations.
+Search reads a validated local cache after one deduplicated Bright Data
+preparation. Player and club queries share it; no provider call occurs per
+keystroke. A stale/missing generation is another explicit billable mutation,
+cached and rate-limited by the API.
 Generation collects the selected player's verified `SeasonMatches` page. If
 the standings index has no numeric player link, the same one-run collector
 starts at the public exact-name search URL, proves one numeric ID, and then
@@ -67,9 +68,10 @@ CARDPULSE_OPERATOR_TOKEN=
 ```
 
 The API enters live mode only when all three `BRIGHT_DATA_*` values are
-present and the collector ID is a valid `c_*` value. A live collection or heal
-also requires the mutation flag plus a private token of at least 32 characters.
-Send that token only in `X-CardPulse-Operator-Token`.
+present and the collector ID is a valid `c_*` value. Public index preparation
+and generation require the mutation flag but no browser token. Healing and
+development mutation routes additionally require the private 32+ character
+admin token in `X-CardPulse-Operator-Token`.
 
 `127.0.0.1` cannot be reached by Bright Data's cloud. For a real run, deploy or
 tunnel the chaos source, keep `/__control` private, and set

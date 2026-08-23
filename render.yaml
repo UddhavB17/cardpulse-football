@@ -13,13 +13,13 @@ services:
       - key: CARDPULSE_ALLOWED_ORIGINS
         value: https://cardpulse-football-web.onrender.com
       - key: CARDPULSE_SOURCE_ID
-        value: statbunker-epl-2025-26
+        value: statbunker-premier-league
       - key: CARDPULSE_SOURCE_PROFILE
         value: statbunker
       - key: CARDPULSE_ENABLE_LIVE_MUTATIONS
         value: "true"
       - key: BRIGHT_DATA_TARGET_URL
-        value: https://www.statbunker.com/competitions/PlayerStandings?comp_id=776
+        value: https://www.statbunker.com/competitions/PlayerStandings?comp_id=791
       - key: BRIGHT_DATA_API_TOKEN
         sync: false
       - key: BRIGHT_DATA_COLLECTOR_ID

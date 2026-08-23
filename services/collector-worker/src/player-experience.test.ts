@@ -187,6 +187,8 @@ describe("index and search (never collects)", () => {
       "ERLING HAALAND",
       "Haaland",
       "haalan",
+      "Manchester City",
+      "Manchester City players",
     ]) {
       const hits = service.searchPlayers(query);
       expect(hits).toHaveLength(1);

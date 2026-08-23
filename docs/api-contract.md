@@ -38,20 +38,22 @@ Errors use a common envelope with `code`, HTTP `status`, safe `message`,
 
 ## Searchable card endpoints
 
-These serve search → season → generate. Search reads a local cached index;
-only an explicit generate can start a real (billable) player-specific match
-collection, and every run reports its truthful stage, including failures.
+These serve search → season → generate. A cold search automatically prepares
+one verified season index through Bright Data; concurrent requests share that
+work and subsequent player/club queries read the cache. Explicit generation
+can start a real player-specific match collection, and every run reports its
+truthful stage, including failures.
 
-| Endpoint                                      | Purpose                                                                                                 |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `GET /api/search/players?q=&season=`          | partial, case-insensitive lookup over the local cached index; never calls a provider                    |
-| `POST /api/player-index/refresh`              | explicit, operator-gated refresh for one registry season; accepts `{ "season": "2025" }`                |
-| `GET /api/seasons`                            | verified registry (`745`/`596`/`776`/`791`) with canonical source URLs and completeness                 |
-| `POST /api/cards/generate`                    | operator-gated generation; returns a fresh cached card (`200`) or an actual run acknowledgement (`202`) |
-| `GET /api/scrapes/{runId}`                    | real run state and stage history; embeds the card only after success                                    |
-| `GET /api/cards/{playerId}?season=`           | latest verified, versioned card bundle for one player-season                                            |
-| `GET /api/players/{playerId}/seasons`         | verified seasons present in the local index for the player                                              |
-| `GET /api/players/{playerId}/matches?season=` | season-bound match availability and rows; unavailability is explained, never zero-filled                |
+| Endpoint                                      | Purpose                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /api/search/players?q=&season=`          | tokenless player-or-club lookup; prepares the requested/latest verified season once when cold          |
+| `POST /api/player-index/refresh`              | tokenless, cached season preparation used by page-load prewarming; accepts `{ "season": "2026" }`      |
+| `GET /api/seasons`                            | verified registry (`745`/`596`/`776`/`791`) with canonical source URLs and completeness                |
+| `POST /api/cards/generate`                    | tokenless rate-limited generation; returns a cached card (`200`) or actual run acknowledgement (`202`) |
+| `GET /api/scrapes/{runId}`                    | real run state and stage history; embeds the card only after success                                   |
+| `GET /api/cards/{playerId}?season=`           | latest verified, versioned card bundle for one player-season                                           |
+| `GET /api/players/{playerId}/seasons`         | verified registry seasons available for live on-demand resolution                                      |
+| `GET /api/players/{playerId}/matches?season=` | season-bound match availability and rows; unavailability is explained, never zero-filled               |
 
 Rules that hold across all of them:
 
@@ -66,8 +68,10 @@ Rules that hold across all of them:
 - the default card freshness TTL is 15 minutes and is evaluated only on an
   explicit Generate action; no background or in-match polling is claimed;
 - failed or quarantined collections never return demo/fixture data;
-- billable generation obeys the same live-mutation flag + operator token
-  controls as every other mutation.
+- public billable work requires the server-side live-mutation kill switch and
+  is cached, deduplicated, and rate-limited; provider/admin credentials never
+  cross into the browser;
+- healing and development mutation routes remain operator-token protected.
 
 The only scrape-stage vocabulary is `finding_player`, `starting_collector`,
 `extracting_statistics`, `validating_data`, and `printing_card`, followed by

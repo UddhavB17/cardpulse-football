@@ -21,7 +21,7 @@ curl -s http://127.0.0.1:4321/api/runtime | jq '.mode, .sourceId'
 # expect: "mock" (no credentials) — no external request or billable mutation
 
 curl -s "http://127.0.0.1:4321/api/search/players?q=haaland" | jq '.data'
-# safe before a live refresh: [] in a new process; the query itself never bills
+# live mode: automatically prepares 2026/27 once, then returns cached matches
 
 curl -s http://127.0.0.1:4321/api/seasons | jq '[.data[].compId]'
 # expect: 745, 596, 776, 791 only
@@ -43,14 +43,13 @@ branch.
 
 Open `http://127.0.0.1:4173`.
 
-Open **Live operator controls**, enter the token (tab memory only), select the
-registry season, and explicitly scrape the live player index once before the
-timed path. The browser has no offline player catalog. The refresh is billable;
-never run it without account-holder approval.
+The browser has no offline player catalog and never asks the judge for a token.
+Open it before the timed path so the automatic current-season Bright Data
+preparation is warm. Provider and admin credentials stay on the server.
 
 | Time      | Action                                                      | What to say                                                                                                                                             |
 | --------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0:00–0:15 | Type “Haaland” into search                                  | “Search runs over a local cached index — typing never costs a provider call.”                                                                           |
+| 0:00–0:15 | Type “Haaland” or “Arsenal” into search                     | “Search works by player or club. A cold session prepares one live directory; later keystrokes read its validated cache.”                                |
 | 0:15–0:30 | Pick a verified season, press generate                      | “Only registry seasons are offered. Generate either serves a validated snapshot from cache or starts one real Bright Data collection — and says which.” |
 | 0:30–0:45 | Watch run status → card                                     | “Stages are reported truthfully end to end; if any stage failed you would see exactly that stage, not a fake success.”                                  |
 | 0:45–1:05 | Flip the card, generate a second season                     | “The back is validated match and goal history. Explicit flip works by keyboard and touch; each season keeps separate provenance.”                       |
@@ -63,8 +62,8 @@ Failure messaging to show deliberately (optional, 30 s):
 - `unavailable` chaos mode → UI keeps the verified card and reports the source
   as unavailable;
 - unknown season query → closed rejection, no collection attempted;
-- blank credentials → runtime says `mock`; billable routes refuse without the
-  mutation flag and operator token.
+- blank server credentials → runtime says `mock`; public live scraping fails
+  closed without exposing or requesting secrets in the browser.
 
 ## Evidence boundaries (say it before a judge asks)
 
@@ -75,6 +74,4 @@ Failure messaging to show deliberately (optional, 30 s):
   approval and has not run**.
 - No browser/on-demand live capture of the searchable flow exists yet.
 
-Keep API and operator tokens out of recordings, screenshots, and shell
-history. Until new captures exist, say: “live path implemented; deterministic
-mock path verified.”
+Keep API and admin tokens out of recordings, screenshots, and shell history.

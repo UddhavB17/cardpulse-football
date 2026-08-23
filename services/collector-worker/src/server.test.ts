@@ -19,6 +19,7 @@ import {
   resolveAllowedOrigins,
   resolveServerHost,
   resolveServerPort,
+  type RequestHandlerOptions,
 } from "./server.js";
 import { createRuntimeFromEnv, type CardPulseRuntime } from "./runtime.js";
 
@@ -77,9 +78,17 @@ function resolvedStatBunkerHaalandMatchRow(): Record<string, unknown> {
   };
 }
 
-async function startRuntimeServer(runtime: CardPulseRuntime) {
+async function startRuntimeServer(
+  runtime: CardPulseRuntime,
+  options: RequestHandlerOptions = {},
+) {
   const server = createServer(
-    createRequestHandler(runtime.pipeline, runtime.coordinator, runtime),
+    createRequestHandler(
+      runtime.pipeline,
+      runtime.coordinator,
+      runtime,
+      options,
+    ),
   );
   const baseUrl = await new Promise<string>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -571,7 +580,6 @@ describe("searchable player-card HTTP flow", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
         },
         body: JSON.stringify({ season: "2025" }),
       });
@@ -636,7 +644,7 @@ describe("searchable player-card HTTP flow", () => {
     }
   });
 
-  it("searches locally, refreshes with auth, collects matches, then serves a cache hit", async () => {
+  it("auto-prepares club search, generates without browser credentials, then serves a cache hit", async () => {
     const runtime = liveStatBunkerRuntime();
     const collect = vi.fn(
       async (request: {
@@ -661,29 +669,26 @@ describe("searchable player-card HTTP flow", () => {
     const { server, baseUrl } = await startRuntimeServer(runtime);
 
     try {
-      const empty = await fetch(
-        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      const clubSearch = await fetch(
+        `${baseUrl}/api/search/players?q=manchester+players&season=2025`,
       );
-      expect(((await empty.json()) as { data: unknown[] }).data).toEqual([]);
-      expect(collect).not.toHaveBeenCalled();
+      const clubSearchBody = (await clubSearch.json()) as {
+        data: Array<{ playerId: string; playerName: string }>;
+      };
+      expect(clubSearchBody.data).toEqual([
+        expect.objectContaining({
+          playerId: HAALAND_ID,
+          playerName: "Erling Haaland",
+        }),
+      ]);
+      expect(collect).toHaveBeenCalledTimes(1);
 
-      const denied = await fetch(`${baseUrl}/api/player-index/refresh`, {
+      const prepared = await fetch(`${baseUrl}/api/player-index/refresh`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ season: "2025" }),
       });
-      expect(denied.status).toBe(403);
-      expect(collect).not.toHaveBeenCalled();
-
-      const refreshed = await fetch(`${baseUrl}/api/player-index/refresh`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
-        },
-        body: JSON.stringify({ season: "2025" }),
-      });
-      expect(refreshed.status).toBe(200);
+      expect(prepared.status).toBe(200);
       expect(collect).toHaveBeenCalledTimes(1);
       expect(collect.mock.calls[0]?.[0]).toMatchObject({
         targetUrl:
@@ -707,7 +712,6 @@ describe("searchable player-card HTTP flow", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
         },
         body: JSON.stringify({
           playerId: HAALAND_ID,
@@ -769,12 +773,57 @@ describe("searchable player-card HTTP flow", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "X-CardPulse-Operator-Token": OPERATOR_TOKEN,
         },
         body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
       });
       expect(cached.status).toBe(200);
       expect(collect).toHaveBeenCalledTimes(2);
+    } finally {
+      await stopRuntimeServer(server);
+    }
+  });
+
+  it("rate-limits public paid work without exposing an operator credential", async () => {
+    const runtime = liveStatBunkerRuntime();
+    const collect = vi.fn(
+      async (request: {
+        sourceId: string;
+        targetUrl: string;
+        requestedAt: string;
+      }) => {
+        const rawRows = [statBunkerHaalandRow()];
+        return {
+          sourceId: request.sourceId,
+          collectorId: "c_exact",
+          extractorVersion: "statbunker-rate-limit-test",
+          receivedAt: "2026-08-23T09:00:00.000Z",
+          rawPayloads: rawRows,
+          payloads: rawRows,
+        };
+      },
+    );
+    runtime.collectionProvider = { collect };
+    const { server, baseUrl } = await startRuntimeServer(runtime, {
+      publicScrapeLimit: 1,
+    });
+
+    try {
+      const search = await fetch(
+        `${baseUrl}/api/search/players?q=haaland&season=2025`,
+      );
+      expect(search.status).toBe(200);
+      expect(collect).toHaveBeenCalledTimes(1);
+
+      const limited = await fetch(`${baseUrl}/api/cards/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playerId: HAALAND_ID, season: "2025" }),
+      });
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toMatchObject({
+        error: { code: "rate_limited" },
+      });
+      expect(collect).toHaveBeenCalledTimes(1);
     } finally {
       await stopRuntimeServer(server);
     }

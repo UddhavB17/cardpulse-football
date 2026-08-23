@@ -3,8 +3,9 @@
 // Every visual phase of the generation rail is gated by resolved network
 // work: the five operations advance only when the requests behind them
 // resolve, never on timers. Failures preserve the last printed card and are
-// always surfaced truthfully. The browser experience is live-operator only:
-// protected refresh and generation actions always use the configured provider.
+// always surfaced truthfully. Provider credentials stay server-side: the
+// browser prepares a cached live index and generation requests are rate-limited
+// by the API before they can reach Bright Data.
 
 import type {
   CardRecord,
@@ -73,6 +74,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 const POLL_INTERVAL_MS = 1_500;
 const MAX_POLLS = 40;
 const MAX_POLL_FAILURES = 3;
+const DEFAULT_INDEX_SEASON: SeasonKey = "2026";
 
 interface AppState {
   client: FootballApiClient;
@@ -97,8 +99,6 @@ interface AppState {
   flipped: boolean;
   flow: FlowState;
   errorMessage: string | null;
-  operatorToken: string;
-  indexSeason: SeasonKey;
   indexRefreshing: boolean;
   indexMessage: string | null;
 }
@@ -126,11 +126,8 @@ const state: AppState = {
   flipped: false,
   flow: initialFlowState(),
   errorMessage: null,
-  operatorToken: "",
-  indexSeason: "2025",
   indexRefreshing: false,
-  indexMessage:
-    "Enter the operator token and refresh a season before searching after an API restart.",
+  indexMessage: "Preparing the live 2026/27 player directory with Bright Data…",
 };
 
 function escapeHtml(value: string): string {
@@ -158,9 +155,7 @@ function dispatch(event: Parameters<typeof transition>[1]): void {
 }
 
 function createLiveClient(): HttpFootballApiClient {
-  const client = new HttpFootballApiClient(configuredApiBase);
-  client.setOperatorToken(state.operatorToken.trim());
-  return client;
+  return new HttpFootballApiClient(configuredApiBase);
 }
 
 function reducedMotion(): boolean {
@@ -199,17 +194,18 @@ app.innerHTML = `
     <section class="finder reveal" aria-labelledby="finder-title">
       <h2 id="finder-title" class="visually-hidden">Player finder</h2>
       <div class="combobox-shell">
-        <label class="search-label" for="player-input">Find a Premier League player</label>
+        <label class="search-label" for="player-input">Find a Premier League player or club</label>
         <div class="search-row">
           <input id="player-input" class="search-input" type="text" role="combobox"
             autocomplete="off" aria-autocomplete="list" aria-expanded="false"
-            aria-controls="player-listbox" placeholder="e.g. Erling Haaland…"
+            aria-controls="player-listbox" placeholder="e.g. Erling Haaland or Arsenal…"
             spellcheck="false" />
           <span class="search-spin" id="search-spin" aria-hidden="true"></span>
         </div>
         <ul id="player-listbox" class="search-listbox" role="listbox"
           aria-label="Player suggestions"></ul>
         <p class="sr-status" id="search-status" role="status" aria-live="polite"></p>
+        <p id="index-status" class="live-index-status" role="status" aria-live="polite"></p>
       </div>
 
       <div class="season-row">
@@ -222,27 +218,7 @@ app.innerHTML = `
       </div>
       <p class="season-note" id="season-note" role="status" aria-live="polite"></p>
 
-      <details class="operator-panel" id="operator-panel" open>
-        <summary>Live operator controls</summary>
-        <p>CardPulse uses the configured live Bright Data provider only. Refresh the player index before searching, then generate a card to scrape that player's latest season statistics.</p>
-        <div class="operator-grid">
-          <label>Operator token
-            <input id="operator-token" type="password" autocomplete="off" spellcheck="false"
-              placeholder="Required for live mutations" />
-          </label>
-          <label>Index season
-            <select id="index-season" aria-label="Season to refresh in the local player index">
-              <option value="2023">2023/24</option>
-              <option value="2024">2024/25</option>
-              <option value="2025" selected>2025/26</option>
-              <option value="2026">2026/27 · incomplete</option>
-            </select>
-          </label>
-          <button class="btn btn-dark" type="button" data-action="refresh-index">Scrape live player index</button>
-        </div>
-        <p id="index-status" class="operator-status" role="status" aria-live="polite"></p>
-        <p class="operator-warning">This explicit action can start one billable Bright Data collection. Typing in search never does.</p>
-      </details>
+      <p class="live-search-note">Search automatically uses a cached Bright Data player directory. Generating a card refreshes that player’s selected-season statistics from the verified source.</p>
     </section>
 
     <section class="pipeline reveal" aria-label="Card generation pipeline">
@@ -277,7 +253,7 @@ function paintTopbar(): void {
   if (target === null) return;
   target.innerHTML = `
     <span class="chip live">
-      <span class="dot" aria-hidden="true"></span>Live operator only
+      <span class="dot" aria-hidden="true"></span>Bright Data live
     </span>
     <span class="chip chip-outline">Unofficial</span>`;
 }
@@ -338,7 +314,7 @@ function paintSearchListbox(): void {
           }" aria-selected="${active}" data-index="${index}">
             <span class="option-name">${highlightName(hit.playerName, normalizeQuery(state.searchQuery))}</span>
             <span class="option-meta">
-              <span class="option-club">${escapeHtml(hit.clubName)}</span>
+            <span class="option-club">${highlightName(hit.clubName, state.searchQuery)}</span>
               <span class="option-pos">${escapeHtml(hit.positionDisplay)}</span>
               <span class="option-seasons">${escapeHtml(seasons.join(" · ")) || "no seasons listed"}</span>
             </span>
@@ -706,25 +682,14 @@ function paintDrawer(): void {
         <div><dt>Healing</dt><dd>${escapeHtml(p.healingLabel)}</dd></div>
         <div><dt>Data label</dt><dd>Live provider</dd></div>
       </dl>
-      <p class="drawer-note">Operator credentials are held only in tab memory, sent only on protected mutation requests, and never rendered or persisted.</p>
+      <p class="drawer-note">Bright Data credentials remain on the server. Public scrape requests are cached, deduplicated and rate-limited before reaching the provider.</p>
     </section>`;
 }
 
-function paintOperatorSetup(): void {
+function paintLiveIndexStatus(): void {
   const status = qs("#index-status");
-  const button = qs<HTMLButtonElement>('[data-action="refresh-index"]');
-  const select = qs<HTMLSelectElement>("#index-season");
   if (status !== null) status.textContent = state.indexMessage ?? "";
-  if (button !== null) {
-    button.disabled = state.indexRefreshing || isBusy();
-    button.textContent = state.indexRefreshing
-      ? "Scraping verified index…"
-      : "Scrape live player index";
-  }
-  if (select !== null) {
-    select.value = state.indexSeason;
-    select.disabled = state.indexRefreshing;
-  }
+  status?.classList.toggle("loading", state.indexRefreshing);
 }
 
 function paintAll(): void {
@@ -736,7 +701,7 @@ function paintAll(): void {
   paintActions();
   paintRail();
   paintNotices();
-  paintOperatorSetup();
+  paintLiveIndexStatus();
   renderCardStage();
 }
 
@@ -790,6 +755,7 @@ async function executeSearch(query: string): Promise<void> {
     const payload = await state.client.searchPlayers(
       query,
       state.selectedSeason,
+      searchAbort.signal,
     );
     if (sequence !== searchSequence) return; // stale response
     state.searchFailed = false;
@@ -966,34 +932,26 @@ async function onSeasonChange(rawKey: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Generation (explicit) — live operator workflow only
+// Live index preparation + generation
 // ---------------------------------------------------------------------------
 
-async function refreshLiveIndex(): Promise<void> {
-  if (state.indexRefreshing || isBusy()) return;
-  if (state.operatorToken.trim() === "") {
-    state.indexMessage =
-      "Enter the operator token before starting a protected live refresh.";
-    paintOperatorSetup();
-    return;
-  }
+async function prepareLiveIndex(): Promise<void> {
+  if (state.indexRefreshing) return;
   const client = createLiveClient();
   state.client = client;
   state.indexRefreshing = true;
-  state.indexMessage = `Refreshing ${seasonLabel(state.indexSeason)} from the verified registry…`;
+  state.indexMessage = `Preparing the live ${seasonLabel(DEFAULT_INDEX_SEASON)} player directory with Bright Data…`;
   state.errorMessage = null;
   paintAll();
   try {
-    const result = await client.refreshPlayerIndex(state.indexSeason);
-    state.indexMessage = `${result.acceptedCount} verified player row${
-      result.acceptedCount === 1 ? "" : "s"
-    } accepted; ${result.indexedPlayerCount} player${
+    const result = await client.refreshPlayerIndex(DEFAULT_INDEX_SEASON);
+    state.indexMessage = `${result.indexedPlayerCount} verified player${
       result.indexedPlayerCount === 1 ? "" : "s"
-    } now searchable. ${result.quarantinedCount} quarantined.`;
+    } ready for ${seasonLabel(DEFAULT_INDEX_SEASON)}. Search by player or club.`;
     const query = normalizeQuery(state.searchQuery);
     if (isSearchableQuery(query)) await executeSearch(query);
   } catch (error) {
-    state.indexMessage = `Index refresh failed: ${errorMessage(error)}`;
+    state.indexMessage = `Live directory unavailable right now; searching will retry automatically. ${errorMessage(error)}`;
   } finally {
     state.indexRefreshing = false;
     paintAll();
@@ -1002,13 +960,6 @@ async function refreshLiveIndex(): Promise<void> {
 
 async function runGeneration(): Promise<void> {
   if (isBusy()) return;
-
-  if (state.operatorToken.trim() === "") {
-    state.errorMessage =
-      "Enter the operator token before starting a protected live scrape.";
-    paintAll();
-    return;
-  }
 
   state.client = createLiveClient();
 
@@ -1330,26 +1281,6 @@ if (listbox !== null) {
   });
 }
 
-const operatorTokenInput = qs<HTMLInputElement>("#operator-token");
-if (operatorTokenInput !== null) {
-  operatorTokenInput.addEventListener("input", () => {
-    state.operatorToken = operatorTokenInput.value;
-    if (state.client instanceof HttpFootballApiClient) {
-      state.client.setOperatorToken(state.operatorToken.trim());
-    }
-    state.indexMessage = null;
-    paintOperatorSetup();
-  });
-}
-
-const indexSeasonSelect = qs<HTMLSelectElement>("#index-season");
-if (indexSeasonSelect !== null) {
-  indexSeasonSelect.addEventListener("change", () => {
-    const season = parseSeasonKey(indexSeasonSelect.value);
-    if (season !== null) state.indexSeason = season;
-  });
-}
-
 app.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
@@ -1373,9 +1304,6 @@ app.addEventListener("click", (event) => {
         break;
       case "retry-search":
         if (searchInput !== null) scheduleSearch(searchInput.value);
-        break;
-      case "refresh-index":
-        void refreshLiveIndex();
         break;
       default:
         break;
@@ -1419,3 +1347,4 @@ document.addEventListener("keydown", (event) => {
 // ---------------------------------------------------------------------------
 
 paintAll();
+void prepareLiveIndex();

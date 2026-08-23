@@ -138,9 +138,9 @@ target or provider means stop and reassess — do not retry through blocks.
 
 ## Step 6 — Connect CardPulse live mode
 
-Generate the operator token, then add both lines to `.env` in your editor
-(still uncommitted), pasting the generated value as a literal string — never
-as part of a shell command:
+Generate the server-only admin token, then add both lines to `.env` in your
+editor (still uncommitted), pasting the generated value as a literal string —
+never as part of a shell command:
 
 ```bash
 openssl rand -hex 32     # copy the output into .env below
@@ -161,8 +161,10 @@ curl -s http://127.0.0.1:4321/api/runtime | jq   # expect mode: "live", valid c_
 pnpm collect               # one CardPulse cycle: trigger → poll → map → validate → snapshot
 ```
 
-The UI badge and `/api/runtime` now say `live`. Every billable mutation stays
-denied unless `CARDPULSE_ENABLE_LIVE_MUTATIONS=true` **and** requests carry
+The UI badge and `/api/runtime` now say `live`. Public search preparation and
+card generation require `CARDPULSE_ENABLE_LIVE_MUTATIONS=true`, but the browser
+never sends or displays a secret; those routes are cached, deduplicated, and
+rate-limited. Healing and `/api/dev/*` mutations additionally require
 `X-CardPulse-Operator-Token: <value>`.
 
 ## Step 7 — Same-ID heal / approval / rerun flow
@@ -212,7 +214,7 @@ routes (all require the operator token header):
 
 Watch the healing state advance
 `quarantined → healing_requested → awaiting_approval → preview_valid →
-approved → recovered` at `GET /api/healing/statbunker-epl-2025-26`, and
+approved → recovered` at `GET /api/healing/statbunker-premier-league`, and
 record the recovery hashes/counts it exposes.
 
 Assert identity preservation across every artifact:

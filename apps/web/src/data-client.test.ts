@@ -353,6 +353,28 @@ describe("HTTP transport behaviour", () => {
     expect(calls[0]).not.toContain("season=");
   });
 
+  it("forwards a search abort signal instead of wrapping it as a transport error", async () => {
+    const controller = new AbortController();
+    let captured: AbortSignal | undefined;
+    const client = new HttpFootballApiClient(
+      "http://test.local",
+      async (_input, init) => {
+        captured = init?.signal ?? undefined;
+        return jsonResponse({ data: [] });
+      },
+    );
+    await client.searchPlayers("haaland", null, controller.signal);
+    expect(captured?.aborted).toBe(false);
+    controller.abort();
+    expect(captured?.aborted).toBe(true);
+
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      client.searchPlayers("haaland", null, aborted.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("sends the generate POST body exactly as contracted", async () => {
     let capturedInit: RequestInit | undefined;
     const { client } = clientFor((_url, init) => {
@@ -371,7 +393,7 @@ describe("HTTP transport behaviour", () => {
     );
   });
 
-  it("sends the operator token only on explicit protected mutations", async () => {
+  it("keeps provider credentials out of browser requests", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new HttpFootballApiClient(
       "http://test.local",
@@ -393,8 +415,6 @@ describe("HTTP transport behaviour", () => {
         return jsonResponse({ data: [] });
       },
     );
-    client.setOperatorToken("operator-secret");
-
     await client.searchPlayers("haaland", null);
     expect(
       new Headers(calls[0]?.init?.headers).has("X-CardPulse-Operator-Token"),
@@ -405,8 +425,8 @@ describe("HTTP transport behaviour", () => {
       indexedPlayerCount: 10,
     });
     expect(
-      new Headers(calls[1]?.init?.headers).get("X-CardPulse-Operator-Token"),
-    ).toBe("operator-secret");
+      new Headers(calls[1]?.init?.headers).has("X-CardPulse-Operator-Token"),
+    ).toBe(false);
   });
 
   it("maps card 404s to null so callers can say 'not available yet'", async () => {

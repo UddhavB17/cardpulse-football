@@ -9,20 +9,19 @@ card generator**: search a real player by name, pick a verified season, and
 generate the front/back card through a real or cached Bright Data collection.
 
 The project combines a high-impact visual reveal with a reliability
-story that is central to scraping: search over a local cached index (never a
-paid per-keystroke call), collect public football rows only on explicit
+story that is central to scraping: automatically prepare a live cached index
+(never a paid per-keystroke call), collect player-match rows on explicit
 generate, validate every record, preserve the last verified card during layout
 drift or provider failure, repair the **same** Bright Data Scraper Studio
 collector, require a valid preview and human approval, rerun it, and show
 evidence of recovery.
 
-The judge-facing browser experience is live-operator only. The Bright Data
-provider path has one redacted credentialed trail proving the earlier
+The judge-facing browser experience is live-only and zero-credential. The Bright Data
+provider path includes a redacted credentialed trail proving the earlier
 10-row StatBunker same-collector repair (real failure → rejected invalid
 preview → corrected same-ID repair → approval → 10-row rerun → 10/10 mapping).
-A browser/API live-mode recording of the new searchable flow and a narrow paid
-Erling Haaland smoke test remain gated on explicit approval and have **not**
-run.
+Release evidence for the public searchable flow should additionally capture a
+player/club search and generated card provenance from the deployed commit.
 
 ## Why this is not just another stats dashboard
 
@@ -46,24 +45,25 @@ product.
 
 ## Judge-facing experience
 
-Open the app, enter the operator token, refresh a verified season, type
-**Erling Haaland** into the search box, choose a verified
-season, and press generate. The card renders front (identity, club, position,
+Open the app, type **Erling Haaland** or **Arsenal** into the search box,
+choose a verified season, and press generate. No judge credential or setup
+step is required. The card renders front (identity, club, position,
 season headline stats) and back (verified match/goal history, provenance,
 snapshot hash) with an explicit flip control. Multiple seasons of the same player can be
 generated side by side for comparison, each carrying its source provenance.
 
 The main flow is:
 
-1. **Authorize and refresh** — the operator token unlocks one explicit live
-   Bright Data player-index scrape for a verified season.
-2. **Search** — an ARIA combobox queries that validated cached player index; no
-   provider call happens per keystroke.
-3. **Choose season** — only seasons in the verified registry are offered;
+1. **Search** — the app prepares the current verified player directory through
+   Bright Data automatically, then the ARIA combobox searches its validated
+   cache by player or club. Concurrent preparation is deduplicated; there is no
+   paid call per keystroke.
+2. **Choose season** — only seasons in the verified registry are offered;
    unknown seasons fail closed instead of guessing a URL.
-4. **Generate** — one explicit operator action triggers either a real Bright Data
+3. **Generate** — one explicit public action triggers either a real Bright Data
    collection (billable) or serves a previously collected validated snapshot
-   from cache; run status is polled asynchronously and every stage shown is
+   from cache. Provider credentials remain server-side, while paid requests are
+   cached, deduplicated, and rate-limited. Run status is polled asynchronously and every stage shown is
    truthful (`finding_player → starting_collector → extracting_statistics →
 validating_data → printing_card`, followed by `succeeded` or `failed`).
    Because the standings table publishes no player link, an uncached list-only
@@ -71,12 +71,12 @@ validating_data → printing_card`, followed by `succeeded` or `failed`).
    provider run, accepts exactly one numeric player ID, and then extracts its
    canonical season-match table. Mixed, partial, or wrong-season identities
    fail closed.
-5. **Inspect the card** — front/back flip, season comparison, and per-card
+4. **Inspect the card** — front/back flip, season comparison, and per-card
    match history plus provenance: source URL, collector shape, snapshot
    version, and hash.
-6. **Inject layout drift / break the source** — bad output is quarantined and
+5. **Inject layout drift / break the source** — bad output is quarantined and
    the last verified card stays on screen; failures never replace verified data.
-7. **Heal** — same-collector refactor preview, schema/count gate, explicit
+6. **Heal** — same-collector refactor preview, schema/count gate, explicit
    approval, rerun, recovery evidence.
 
 The web app keeps its original comic-print visual system: halftone texture,
@@ -119,7 +119,7 @@ The card experience is keyboard- and touch-complete:
 
 | Workspace                   | Responsibility                                                                      |
 | --------------------------- | ----------------------------------------------------------------------------------- |
-| `apps/web`                  | Card generator, reliability timeline, team views, standings, operator actions       |
+| `apps/web`                  | Zero-credential card generator, reliability timeline, team views, and standings     |
 | `apps/chaos-source`         | Stable `/players` HTML target with table, cards, amendment, and unavailable modes   |
 | `services/collector-worker` | API, validation pipeline, snapshots, diffing, quarantine, healing orchestration     |
 | `packages/contracts`        | Canonical Zod schemas and deterministic football fixtures                           |
@@ -165,11 +165,12 @@ pnpm start:api
 pnpm dev:web
 ```
 
-Open `http://127.0.0.1:4173`. The browser is live-operator only. With blank
-credentials the API stays safely in `mock` mode and protected browser actions
-fail closed. A fresh live process has an empty in-memory index until an explicit
-operator-gated season refresh; search itself never bills, and stale/missing
-generation bills only after the protected Generate action.
+Open `http://127.0.0.1:4173`. The browser never asks for provider or operator
+credentials. With blank server credentials the API stays safely in `mock`
+mode and live scraping fails closed. A configured live process automatically
+prepares the current-season index on page load or first search; later
+keystrokes read the cache, and stale/missing generation can collect only after
+the explicit Generate action.
 
 For hosting, use the checked-in [Render Blueprint](render.yaml) or follow the
 [manual Render deployment settings](docs/render-deployment.md). The production
@@ -212,11 +213,13 @@ The healing adapter sends `{ prompt, custom_input: [] }` to
 `resume_automation_job` only after a valid preview plus human approval, polls
 to terminal `done`, and reruns the same first-class `c_*` ID.
 
-Live mode requires all three `BRIGHT_DATA_*` variables. Billable/mutating API
-routes additionally require `CARDPULSE_ENABLE_LIVE_MUTATIONS=true` and a
-private 32+ character `CARDPULSE_OPERATOR_TOKEN` supplied as
-`X-CardPulse-Operator-Token`. These routes are local operator controls, not a
-production authentication design.
+Live mode requires all three `BRIGHT_DATA_*` variables. Public player-index
+preparation and card generation require the server-side
+`CARDPULSE_ENABLE_LIVE_MUTATIONS=true` kill switch; they are cached,
+deduplicated, and rate-limited and never receive provider credentials from the
+browser. A private 32+ character `CARDPULSE_OPERATOR_TOKEN` remains a
+server/admin secret for the separate healing and development mutation routes;
+judges never enter or see it.
 
 ## Deterministic chaos source
 

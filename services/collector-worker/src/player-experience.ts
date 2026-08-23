@@ -334,6 +334,11 @@ export class PlayerExperienceService {
   readonly #cardsById = new Map<string, CardBundle>();
   readonly #runs = new Map<string, ScrapeRun>();
   readonly #matches = new Map<string, MatchRow[]>();
+  readonly #indexedSeasons = new Set<string>();
+  readonly #inFlightGenerations = new Map<
+    string,
+    { readonly runId: string; readonly completion: Promise<GenerateResult> }
+  >();
   readonly #recoveryContexts = new Map<string, RecoveryCollectionContext>();
   #demoSeeded = false;
 
@@ -356,6 +361,7 @@ export class PlayerExperienceService {
     for (const snapshot of snapshots) {
       if (snapshot.record.entityType !== "player") continue;
       const record = snapshot.record;
+      this.#indexedSeasons.add(record.season);
       const existing = this.#index.get(record.playerId);
       const observedAtMs = Date.parse(snapshot.observedAt);
       const seasonProfile: IndexedSeasonProfile = {
@@ -422,12 +428,15 @@ export class PlayerExperienceService {
   ): PlayerIndexEntry[] {
     const needle = normalizeForSearch(query);
     if (needle === "") return [];
+    const searchTokens = needle
+      .split(" ")
+      .filter((token) => token !== "player" && token !== "players");
+    if (searchTokens.length === 0) return [];
 
     const clubNeedle =
       options.club === undefined ? null : normalizeForSearch(options.club);
     const hits: PlayerIndexEntry[] = [];
     for (const player of this.#index.values()) {
-      if (!normalizeForSearch(player.playerName).includes(needle)) continue;
       if (options.season !== undefined && !player.seasons.has(options.season)) {
         continue;
       }
@@ -443,6 +452,10 @@ export class PlayerExperienceService {
             }
           : player.seasonProfiles.get(options.season);
       if (profile === undefined) continue;
+      const searchText = normalizeForSearch(
+        `${profile.playerName} ${profile.team.name}`,
+      );
+      if (!searchTokens.every((token) => searchText.includes(token))) continue;
       if (
         clubNeedle !== null &&
         !normalizeForSearch(profile.team.name).includes(clubNeedle)
@@ -482,6 +495,37 @@ export class PlayerExperienceService {
     return [...(this.#index.get(playerId)?.seasons ?? [])].sort();
   }
 
+  /** Whether one verified season has already populated the live index. */
+  hasIndexedSeason(season: string): boolean {
+    return this.#indexedSeasons.has(season);
+  }
+
+  /** Number of unique player identities currently held in memory. */
+  getIndexedPlayerCount(): number {
+    return this.#index.size;
+  }
+
+  /**
+   * Resolve a player selected in one season to the same unambiguous exact
+   * name in another indexed season. This supports transfers without guessing
+   * between duplicate names.
+   */
+  resolvePlayerIdForSeason(playerId: string, season: string): string | null {
+    const selected = this.#index.get(playerId);
+    if (selected === undefined) return null;
+    if (selected.seasons.has(season)) return selected.playerId;
+
+    const exactName = normalizeForSearch(selected.playerName);
+    const candidates = [...this.#index.values()].filter((candidate) => {
+      const profile = candidate.seasonProfiles.get(season);
+      return (
+        profile !== undefined &&
+        normalizeForSearch(profile.playerName) === exactName
+      );
+    });
+    return candidates.length === 1 ? (candidates[0]?.playerId ?? null) : null;
+  }
+
   /** The frozen verified season registry (745 / 596 / 776 / 791). */
   listSeasons(): readonly VerifiedSeasonMetadata[] {
     return listVerifiedStatBunkerSeasons();
@@ -489,8 +533,9 @@ export class PlayerExperienceService {
 
   /**
    * Explicit, billable index refresh for one verified season. HTTP callers
-   * must apply the live-mutation/operator guard before invoking it. The whole
-   * batch passes through the existing majority-drift/healing gate once, then
+   * apply the live-mutation switch, deduplication, and public rate limit before
+   * invoking it. The whole batch passes through the existing
+   * majority-drift/healing gate once, then
    * accepted player snapshots seed both autocomplete and fresh card bundles.
    */
   async refreshIndex(
@@ -643,6 +688,15 @@ export class PlayerExperienceService {
       };
     }
 
+    const inFlight = this.#inFlightGenerations.get(matchKey);
+    if (inFlight !== undefined) {
+      return {
+        kind: "started",
+        runId: inFlight.runId,
+        completion: inFlight.completion,
+      };
+    }
+
     let targetUrl: string;
     let collectionSourceId: string;
     try {
@@ -705,19 +759,26 @@ export class PlayerExperienceService {
     );
     this.#saveRun(run);
 
+    const completion = this.#completeGeneration(
+      request,
+      player,
+      seasonProfile,
+      seasonMeta,
+      run,
+      cached,
+      targetUrl,
+      collectionSourceId,
+    ).finally(() => {
+      this.#inFlightGenerations.delete(matchKey);
+    });
+    this.#inFlightGenerations.set(matchKey, {
+      runId: run.runId,
+      completion,
+    });
     return {
       kind: "started",
       runId: run.runId,
-      completion: this.#completeGeneration(
-        request,
-        player,
-        seasonProfile,
-        seasonMeta,
-        run,
-        cached,
-        targetUrl,
-        collectionSourceId,
-      ),
+      completion,
     };
   }
 
