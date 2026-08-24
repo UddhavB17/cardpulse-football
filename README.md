@@ -207,30 +207,10 @@ pnpm build
 pnpm demo:collector
 ```
 
-## Demo recording
-
-For a short walkthrough, use the [demo video script](docs/demo-video-script.md):
-
-1. Open the live app.
-2. Search for Erling Haaland.
-3. Choose 2025/26.
-4. Generate the card.
-5. Flip it and open the provenance section.
-6. Explain that the card keeps its source and scrape run.
-
-The repository includes the screenshots above so the project can be understood
-even before a video is recorded.
-
 ## Important limits
 
-- This is an unofficial fan project. It is not affiliated with the Premier
-  League, StatBunker, or any club.
-- CardPulse does not use player photos, club crests, league logos, or copied
-  brand artwork.
 - Runtime state is in memory. Restarting the API clears local snapshots.
 - The current-season data is partial until all matches are complete.
-- Public source access is not the same as permission to redistribute source
-  data. Check the source terms and rate limits before running a live collector.
 
 ## More documentation
 
