@@ -96,6 +96,12 @@ export interface BrightDataCollectionProviderOptions {
   apiToken?: string;
   collectorId?: string;
   /**
+   * Allow Bright Data to run a collector whose linked output schema is
+   * temporarily incompatible with the extractor output. This is needed for
+   * the live StatBunker collector after its same-ID searchable refactor.
+   */
+  overrideIncompatibleSchema?: boolean;
+  /**
    * Optional source-profile row mapper (e.g. StatBunker). Applied to every
    * raw dataset row before generic canonical mapping.
    */
@@ -113,6 +119,7 @@ export interface BrightDataCollectionProviderOptions {
 export class BrightDataCollectionProvider implements FootballCollectionProvider {
   private readonly apiToken: string;
   private readonly collectorId: string;
+  private readonly overrideIncompatibleSchema: boolean;
   private readonly rowMapper: BrightDataRowMapper | null;
   private readonly pollingIntervalMs: number;
   private readonly timeoutMs: number;
@@ -127,6 +134,8 @@ export class BrightDataCollectionProvider implements FootballCollectionProvider 
     this.apiToken = options.apiToken || process.env.BRIGHT_DATA_API_TOKEN || "";
     this.collectorId =
       options.collectorId || process.env.BRIGHT_DATA_COLLECTOR_ID || "";
+    this.overrideIncompatibleSchema =
+      options.overrideIncompatibleSchema ?? false;
     this.rowMapper = options.rowMapper ?? null;
     this.pollingIntervalMs = options.pollingIntervalMs ?? 5000;
     this.timeoutMs = options.timeoutMs ?? 120000;
@@ -155,6 +164,9 @@ export class BrightDataCollectionProvider implements FootballCollectionProvider 
     const triggerUrl = new URL("https://api.brightdata.com/dca/trigger");
     triggerUrl.searchParams.set("collector", this.collectorId);
     triggerUrl.searchParams.set("queue_next", "1");
+    if (this.overrideIncompatibleSchema) {
+      triggerUrl.searchParams.set("override_incompatible_schema", "1");
+    }
 
     const triggerRes = await this.fetchWithRetry(
       triggerUrl.toString(),
