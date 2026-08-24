@@ -1,163 +1,147 @@
 # CardPulse Football
 
 [![CI](https://github.com/UddhavB17/cardpulse-football/actions/workflows/ci.yml/badge.svg)](https://github.com/UddhavB17/cardpulse-football/actions/workflows/ci.yml)
+[![Live demo](https://img.shields.io/badge/live_demo-open_app-2f6f5e)](https://cardpulse-football-web.onrender.com)
 
-CardPulse turns scraped football statistics into animated, game-style player
-cards — and keeps the data trustworthy when the source page changes shape.
-This branch transforms the one-player prototype into a **searchable Premier League
-card generator**: search a real player by name, pick a verified season, and
-generate the front/back card through a real or cached Bright Data collection.
+Search for a Premier League player, choose a season, and print a collectible
+card from verified football statistics.
 
-The project combines a high-impact visual reveal with a reliability
-story that is central to scraping: automatically prepare a live cached index
-(never a paid per-keystroke call), collect player-match rows on explicit
-generate, validate every record, preserve the last verified card during layout
-drift or provider failure, repair the **same** Bright Data Scraper Studio
-collector, require a valid preview and human approval, rerun it, and show
-evidence of recovery.
+CardPulse is a small full-stack project with one simple idea: football data
+should be fun to explore, but the numbers should still be explainable. Each
+card keeps the source, the time it was collected, and the scrape run that
+produced it.
 
-The judge-facing browser experience is live-only and zero-credential. The Bright Data
-provider path includes a redacted credentialed trail proving the earlier
-10-row StatBunker same-collector repair (real failure → rejected invalid
-preview → corrected same-ID repair → approval → 10-row rerun → 10/10 mapping).
-Release evidence for the public searchable flow should additionally capture a
-player/club search and generated card provenance from the deployed commit.
+## See it in action
 
-## Why this is not just another stats dashboard
+Open the [live demo](https://cardpulse-football-web.onrender.com), search for
+**Erling Haaland**, choose **2025/26**, and select **Generate live card**.
 
-Sports pages change continuously. CSS classes move, tables become cards, and
-A/B tests quietly break selectors. A conventional dashboard either crashes or
-serves stale numbers. CardPulse makes that failure visible and recoverable:
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/cardpulse-home.jpg" alt="CardPulse search screen" /></td>
+    <td width="50%"><img src="docs/assets/cardpulse-generated-card.jpg" alt="CardPulse generated Haaland card" /></td>
+  </tr>
+  <tr>
+    <td align="center">Search and choose a season</td>
+    <td align="center">Generate a live player card</td>
+  </tr>
+</table>
 
-- strict Zod contracts for player, team, and standing records;
-- SHA-256 payload evidence and immutable versioned snapshots;
-- quarantine instead of letting malformed rows corrupt the card;
-- batch-level drift confirmation, so one bad row cannot trigger a repair;
-- last-known-good preservation while the scraper is broken;
-- same-`c_*` collector refactor, preview validation, approval, terminal polling,
-  rerun, and recovery ledger;
-- deterministic semantic events for goals, assists, appearances, discipline,
-  profiles, and league-table changes.
+<p align="center">
+  <img src="docs/assets/cardpulse-card-details.jpg" alt="CardPulse card provenance and verified statistics" width="720" />
+</p>
 
-Remove scraping and the collection, drift, healing, provenance, and recovery
-story disappears. The animated card is the payoff; reliable scraping is the
-product.
+The screenshots are point-in-time examples. Live football data can change as
+the source publishes new matches or corrections.
 
-## Judge-facing experience
+## What the project does
 
-Open the app, type **Erling Haaland** or **Arsenal** into the search box,
-choose a verified season, and press generate. No judge credential or setup
-step is required. The card renders front (identity, club, position,
-season headline stats) and back (verified match/goal history, provenance,
-snapshot hash) with an explicit flip control. Multiple seasons of the same player can be
-generated side by side for comparison, each carrying its source provenance.
+1. The browser prepares a verified player directory.
+2. You search by player or club name.
+3. You choose one of the supported Premier League seasons.
+4. You generate a card with one clear action.
+5. The API collects and checks the player statistics.
+6. The card shows totals, match history, and data provenance.
 
-The main flow is:
+The browser never asks for a Bright Data token. Provider credentials stay on
+the API server.
 
-1. **Search** — the app prepares the current verified player directory through
-   Bright Data automatically, then the ARIA combobox searches its validated
-   cache by player or club. Concurrent preparation is deduplicated; there is no
-   paid call per keystroke.
-2. **Choose season** — only seasons in the verified registry are offered;
-   unknown seasons fail closed instead of guessing a URL.
-3. **Generate** — one explicit public action triggers either a real Bright Data
-   collection (billable) or serves a previously collected validated snapshot
-   from cache. Provider credentials remain server-side, while paid requests are
-   cached, deduplicated, and rate-limited. Run status is polled asynchronously and every stage shown is
-   truthful (`finding_player → starting_collector → extracting_statistics →
-validating_data → printing_card`, followed by `succeeded` or `failed`).
-   Because the standings table publishes no player link, an uncached list-only
-   identity uses StatBunker's public exact-name search URL in that same single
-   provider run, accepts exactly one numeric player ID, and then extracts its
-   canonical season-match table. Mixed, partial, or wrong-season identities
-   fail closed.
-4. **Inspect the card** — front/back flip, season comparison, and per-card
-   match history plus provenance: source URL, collector shape, snapshot
-   version, and hash.
-5. **Inject layout drift / break the source** — bad output is quarantined and
-   the last verified card stays on screen; failures never replace verified data.
-6. **Heal** — same-collector refactor preview, schema/count gate, explicit
-   approval, rerun, recovery evidence.
+## Why the scraper matters
 
-The web app keeps its original comic-print visual system: halftone texture,
-chromatic separation, angular wipes, card tilt, and a controlled glitch while
-the source is compromised. It bundles no player photos, club crests, league
-marks, or Spider-Verse assets.
+StatBunker is a public football statistics site. Its HTML can change, and a
+scraper can fail even when the football data is still there.
 
-### Verified season registry
+CardPulse treats scraping as a data pipeline:
 
-Search and generation accept only these StatBunker Premier League seasons,
-each verified at its official list page:
+- invalid rows are rejected instead of being turned into fake zeroes;
+- the last verified card stays visible if a new collection fails;
+- the exact player ID and season are checked before a card is printed;
+- layout drift can be repaired in the same Bright Data collector;
+- a repair needs a valid preview and human approval before rerunning.
 
-| Season  | `comp_id` | Official source URL                                                   | Status             |
-| ------- | --------: | --------------------------------------------------------------------- | ------------------ |
-| 2023/24 |       745 | <https://www.statbunker.com/competitions/PlayerStandings?comp_id=745> | complete           |
-| 2024/25 |       596 | <https://www.statbunker.com/competitions/PlayerStandings?comp_id=596> | complete           |
-| 2025/26 |       776 | <https://www.statbunker.com/competitions/PlayerStandings?comp_id=776> | complete           |
-| 2026/27 |       791 | <https://www.statbunker.com/competitions/PlayerStandings?comp_id=791> | current/incomplete |
+The card is the visible result. The trust checks are the part that keeps it
+honest.
 
-Any other season fails closed: no URL is guessed, no collection runs.
-Current-season rows are partial by definition. StatBunker publishes updates
-after each match completes; CardPulse recollects a player-specific
-`SeasonMatches` page on the next explicit Generate action once the card is
-older than the 15-minute freshness window. It does not claim goal-by-goal
-in-match updates or run a background poller.
+## System architecture
 
-## Accessibility
-
-The card experience is keyboard- and touch-complete:
-
-- search is an ARIA combobox with full keyboard behavior (arrows, Enter,
-  Escape), announced options, and touch-friendly targets;
-- flipping is explicit — a button/toggle that works by keyboard and touch,
-  never hover-only;
-- `prefers-reduced-motion` disables non-essential animation;
-- cards contain no player photos, club crests/league logos, or shot
-  coordinates — only text, numbers, and original art.
-
-## Architecture
-
-| Workspace                   | Responsibility                                                                      |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| `apps/web`                  | Zero-credential card generator, reliability timeline, team views, and standings     |
-| `apps/chaos-source`         | Stable `/players` HTML target with table, cards, amendment, and unavailable modes   |
-| `services/collector-worker` | API, validation pipeline, snapshots, diffing, quarantine, healing orchestration     |
-| `packages/contracts`        | Canonical Zod schemas and deterministic football fixtures                           |
-| `packages/validation`       | Stable serialization, hashing, and extraction validation                            |
-| `packages/brightdata`       | Scraper Studio trigger/poll adapter, row mapper, and same-collector healing adapter |
-
-Workspace package names still use the historical `@bidsentinel` scope to keep
-the migration reviewable; all product-facing names and runtime contracts are
-CardPulse Football.
-
-## Hackathon submission artifacts
-
-- [Example StatBunker-shaped collector output](examples/structured-output.json)
-  (illustrative shape; not captured from a live run)
-- [StatBunker collector spec and Scraper Studio prompts](scrapers/statbunker/README.md)
-- [Terminal-first StatBunker live runbook](docs/statbunker-live-runbook.md)
-- [Searchable card demo guide and test matrix](docs/searchable-card-demo.md)
-- [One-minute judge runbook](docs/demo-runbook.md)
-- [Live Scraper Studio evidence checklist](evidence/README.md)
-- [Redacted real first-run failure evidence](evidence/live/statbunker-first-run-failure.redacted.json)
-- [Redacted successful same-ID recovery evidence](evidence/live/statbunker-same-id-recovery.redacted.json)
-- Public repository: <https://github.com/UddhavB17/cardpulse-football>
-
-The repository now contains redacted successful same-`c_*` provider and mapper
-evidence for the earlier 10-row StatBunker repair only. A deployed browser/API
-recording of the searchable flow, the gated Erling Haaland paid smoke test,
-and the final demo video URL must still be added before the submission form is
-filed; none of these has run yet.
-
-## Run locally
-
-Requirements: Node 22+ and pnpm 11.
-
-```bash
-pnpm install
+```mermaid
+flowchart LR
+    Browser[Browser app] -->|search or generate| API[CardPulse API]
+    API -->|read and update| Index[Validated player index]
+    Index -->|search results| Browser
+    API -->|trigger and poll| Collector[Bright Data collector]
+    Collector --> StatBunker[StatBunker pages]
+    Collector --> Rows[Raw player rows]
+    Rows --> Map[Map rows to football records]
+    Map --> Check{Pass validation?}
+    Check -->|yes| Snapshot[Versioned snapshot]
+    Snapshot --> API
+    API --> Card[Player card with provenance]
+    Check -->|no| Quarantine[Quarantine bad batch]
+    Quarantine --> Keep[Keep last verified card]
+    Quarantine --> Repair[Repair same collector]
+    Repair --> Preview[Preview and human approval]
+    Preview --> Collector
 ```
 
-Start these in separate terminals:
+Read the full explanation in [docs/architecture.md](docs/architecture.md).
+
+### The pieces
+
+| Folder                                                   | What it does                                                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [`apps/web`](apps/web)                                   | The search box, season picker, card, provenance panel, and reliability timeline.           |
+| [`services/collector-worker`](services/collector-worker) | The API, collection flow, validation, snapshots, caching, and healing logic.               |
+| [`packages/brightdata`](packages/brightdata)             | The Bright Data trigger and polling client plus StatBunker row mapping.                    |
+| [`packages/contracts`](packages/contracts)               | Shared Zod schemas for players, matches, cards, and API responses.                         |
+| [`packages/validation`](packages/validation)             | Stable serialization, hashes, and extraction checks.                                       |
+| [`apps/chaos-source`](apps/chaos-source)                 | A local test page that can simulate normal HTML, layout drift, changed stats, or downtime. |
+
+### A card request in plain English
+
+1. The browser sends a player ID and season to the API.
+2. The API checks the season against the verified registry.
+3. The collector gets the player match page. If the index has no usable ID,
+   the collector first resolves one exact player ID from the public search page.
+4. Every returned row must belong to that player and season.
+5. Valid rows become a versioned snapshot with a SHA-256 hash.
+6. The API returns the card and its provenance to the browser.
+
+## Supported seasons
+
+CardPulse only uses seasons that are explicitly listed in the source registry.
+It never guesses a StatBunker URL for an unknown season.
+
+| Season  | StatBunker `comp_id` | Status                 |
+| ------- | -------------------: | ---------------------- |
+| 2023/24 |                  745 | Complete               |
+| 2024/25 |                  596 | Complete               |
+| 2025/26 |                  776 | Complete               |
+| 2026/27 |                  791 | Current and incomplete |
+
+The current season may have fewer completed matches. CardPulse labels missing
+history instead of filling it with invented values.
+
+## Run it locally
+
+### Requirements
+
+- Node.js 22 or newer
+- pnpm 11 or newer
+
+### Install
+
+```bash
+corepack enable
+pnpm install
+cp .env.example .env
+```
+
+Blank provider credentials use safe local mock mode.
+
+### Start the app
+
+Run these commands in three terminals:
 
 ```bash
 pnpm dev:chaos-source
@@ -165,139 +149,100 @@ pnpm start:api
 pnpm dev:web
 ```
 
-Open `http://127.0.0.1:4173`. The browser never asks for provider or operator
-credentials. With blank server credentials the API stays safely in `mock`
-mode and live scraping fails closed. A configured live process automatically
-prepares the current-season index on page load or first search; later
-keystrokes read the cache, and stale/missing generation can collect only after
-the explicit Generate action.
+Then open <http://127.0.0.1:4173>.
 
-For hosting, use the checked-in [Render Blueprint](render.yaml) or follow the
-[manual Render deployment settings](docs/render-deployment.md). The production
-API binds to Render's assigned port and only accepts browser requests from the
-explicitly configured frontend origin.
+Useful local URLs:
 
-Useful endpoints:
+- Web app: <http://127.0.0.1:4173>
+- API: <http://127.0.0.1:4321>
+- Scraper test page: <http://127.0.0.1:4311/players>
+- Scraper test controls: <http://127.0.0.1:4311/__control>
 
-- chaos source: `http://127.0.0.1:4311/players`
-- chaos controls: `http://127.0.0.1:4311/__control`
-- API: `http://127.0.0.1:4321`
-- web: `http://127.0.0.1:4173`
+The local source controls can switch between these modes:
 
-The searchable card flow adds search, seasons, async card-generation run
-status, generated-card, matches-availability, and scrape-status routes on top
-of the preserved reliability/operator endpoints — see [the API
-contract](docs/api-contract.md) and [the searchable card demo
-guide](docs/searchable-card-demo.md).
+- `baseline-table`: normal table markup
+- `drift-cards`: the same data in a different layout
+- `amended-stats`: valid data with a real change
+- `unavailable`: a source failure
 
-See [the demo runbook](docs/demo-runbook.md) for the one-minute presentation
-and [local development](docs/local-development.md) for live-mode setup.
+## Bright Data setup
 
-## Bright Data integration
+Live collection is optional. To use it, set these server-side variables in
+`.env`:
 
-The collection adapter follows the Scraper Studio flow:
+```dotenv
+BRIGHT_DATA_API_TOKEN=
+BRIGHT_DATA_COLLECTOR_ID=
+BRIGHT_DATA_TARGET_URL=
+CARDPULSE_ENABLE_LIVE_MUTATIONS=false
+CARDPULSE_OPERATOR_TOKEN=
+```
 
-1. `POST /dca/trigger?collector=c_*&queue_next=1` with `[{ "url": "…" }]`;
-2. capture the returned `collection_id`;
-3. poll `GET /dca/dataset?id=…` until a row array is returned;
-4. use `PlayerStandings?comp_id=…` for an explicit index refresh; generation
-   targets the verified player-specific
-   `SeasonMatches?comps_id=…&comps_type=EPL&player_id=…` URL when a numeric ID
-   is cached, otherwise one exact-name `/usual/search` input resolves and
-   collects that canonical match table in the same provider run;
-5. map every match row into frozen contracts, validate/quarantine the batch,
-   derive season totals, then store the versioned card and match history.
+Never commit `.env`, a token, or an operator secret. The browser does not need
+any of these values.
 
-The healing adapter sends `{ prompt, custom_input: [] }` to
-`refactor_template`, preserves structured `preview_result`, resumes through
-`resume_automation_job` only after a valid preview plus human approval, polls
-to terminal `done`, and reruns the same first-class `c_*` ID.
+For the full live setup and scraper notes, see:
 
-Live mode requires all three `BRIGHT_DATA_*` variables. Public player-index
-preparation and card generation require the server-side
-`CARDPULSE_ENABLE_LIVE_MUTATIONS=true` kill switch; they are cached,
-deduplicated, and rate-limited and never receive provider credentials from the
-browser. A private 32+ character `CARDPULSE_OPERATOR_TOKEN` remains a
-server/admin secret for the separate healing and development mutation routes;
-judges never enter or see it.
+- [Local development](docs/local-development.md)
+- [StatBunker runbook](docs/statbunker-live-runbook.md)
+- [StatBunker scraper notes](scrapers/statbunker/README.md)
 
-## Deterministic chaos source
+## Test and build
 
-`/players` is the stable scraper target. `/__control` changes only its current
-mode:
-
-- `baseline-table` — verified player statistics and standings in tables;
-- `drift-cards` — identical business data in a different DOM structure;
-- `amended-stats` — structurally valid data with a real statistical change;
-- `unavailable` — a 503 source failure.
-
-The JSON fixture route exists for tests; the judge story is the HTML page
-changing under one stable URL.
-
-## Data and attribution
-
-The local demo contains a clearly stamped Haaland identity with synthetic demo
-totals, additional fictional players/clubs, and original SVG/CSS art. These
-fixtures are test-only and are never exposed by the live browser workflow.
-Its football record model is inspired by
-[OpenLigaDB](https://www.openligadb.de/), whose published database is offered
-under the [Open Database License (ODbL)](https://www.openligadb.de/lizenz).
-CardPulse does not redistribute third-party player photos, club crests, league
-marks, or an OpenLigaDB data dump.
-
-[StatBunker](https://www.statbunker.com/) is a public HTML statistics site
-targeted by the collector spec in
-[`scrapers/statbunker/`](scrapers/statbunker/README.md). Public reachability
-is a technical fact, not a license: its terms must be checked before any live
-run, robots-friendly pages still deserve a low request rate (one manual
-collector run at a time, no schedules), and any 403 or 429 means stop. The
-spec collects only public statistical fields — never images, crests, player
-photos, or account/login pages. No StatBunker data is redistributed through
-this repository; the local fixtures remain fictional,
-OpenLigaDB-inspired demo data only.
-
-Before adding another real source, verify its terms, robots policy, rate limits,
-and redistribution rights. Keep source adapters isolated so one site's layout
-or policy does not contaminate the canonical football model.
-
-## AI assistance disclosure
-
-Codex and OpenCode coding agents were used during implementation, testing, and
-review. The team selected the product direction and architecture, inspected the
-generated changes, exercised the complete browser workflow, and verified the
-repository with the automated checks below. Team members are responsible for
-understanding and explaining the submitted code and technical decisions.
-
-## Verification
+Run the complete project check with:
 
 ```bash
 pnpm check
 ```
 
-This runs lint, typecheck, all tests, every workspace build, and the deterministic
-collector demo. The focused contracts and provider tests are:
+This runs formatting checks, linting, type checks, tests, builds, and the
+deterministic collector demo.
+
+Useful focused commands:
 
 ```bash
-pnpm --filter @bidsentinel/contracts test
-pnpm --filter @bidsentinel/brightdata test
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm demo:collector
 ```
 
-## Evidence status
+## Demo recording
 
-- **Implemented and automatically verified:** football contracts, mapping,
-  strict validation, baseline preservation, minority-row safety, initial-empty
-  safety, batch drift detection, quarantine, valid-preview-only approval,
-  same-ID resume/poll/rerun evidence, API contracts, and UI state logic.
-- **Externally verified:** one credentialed Bright Data failure → invalid
-  preview rejection → corrected refactor preview → approval → 10-row same-ID
-  rerun, followed by 10/10 canonical mapper acceptance. This proves the
-  earlier 10-row StatBunker same-collector repair only.
-- **Gated, not run:** the single narrow paid Erling Haaland smoke test waits
-  on explicit approval; no browser/on-demand live capture of the searchable
-  flow exists yet.
-- **Still required before the final deployed claim:** that gated smoke test,
-  one browser/API live-mode capture of search → season → generate, and the
-  submission demo video.
+For a short walkthrough, use the [demo video script](docs/demo-video-script.md):
 
-That distinction is deliberate: mock mode proves deterministic product
-behavior; only external evidence can prove the provider account path.
+1. Open the live app.
+2. Search for Erling Haaland.
+3. Choose 2025/26.
+4. Generate the card.
+5. Flip it and open the provenance section.
+6. Explain that the card keeps its source and scrape run.
+
+The repository includes the screenshots above so the project can be understood
+even before a video is recorded.
+
+## Important limits
+
+- This is an unofficial fan project. It is not affiliated with the Premier
+  League, StatBunker, or any club.
+- CardPulse does not use player photos, club crests, league logos, or copied
+  brand artwork.
+- Runtime state is in memory. Restarting the API clears local snapshots.
+- The current-season data is partial until all matches are complete.
+- Public source access is not the same as permission to redistribute source
+  data. Check the source terms and rate limits before running a live collector.
+
+## More documentation
+
+- [System architecture](docs/architecture.md)
+- [API contract](docs/api-contract.md)
+- [Searchable card demo guide](docs/searchable-card-demo.md)
+- [Render deployment](docs/render-deployment.md)
+- [Evidence folder](evidence/README.md)
+
+## License and attribution
+
+The local demo fixtures are fictional and used for testing. The project model
+is inspired by public football data formats, including
+[OpenLigaDB](https://www.openligadb.de/). Review the source terms before using
+CardPulse with live data.

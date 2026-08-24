@@ -1,181 +1,138 @@
-# Architecture
+# CardPulse architecture
 
-CardPulse is a football-domain application built around a provider-neutral
-reliability pipeline, a Bright Data Scraper Studio boundary, and — on this
-branch — a searchable Premier League card generator on top of both.
+This page explains how CardPulse turns a player search into a verified football
+card. It uses the same names as the folders in the repository.
 
-## Data flow
+## Overview
 
 ```mermaid
-flowchart LR
-  Query[Player or club query] --> Ready{season index ready?}
-  Ready -->|yes| Idx[Validated cached player index]
-  Ready -->|no: one deduplicated preparation| BD[Bright Data collector c_*]
-  BD --> Idx
-  Idx --> Pick[player + verified season]
-  Pick --> Gen{Explicit generate}
-  Gen -->|cache hit| Snap[Existing validated snapshot]
-  Gen -->|cache miss / forced refresh| Resolve{numeric player ID cached?}
-  Resolve -->|yes| BD
-  Resolve -->|no: exact-name input| BD
-  BD --> Rows[Raw row batch]
-  Rows --> Map[Football row mapper]
-  Map --> Validate{Strict contract}
-  Validate -->|valid| Snapshot[Versioned snapshot]
-  Validate -->|invalid| Quarantine[Quarantine + payload hash]
-  Snapshot --> Diff[Deterministic semantic diff]
-  Snap --> Card[CardPulse UI: front/back card]
-  Diff --> API[Players / teams / standings / changes API]
-  API --> Card
-  Quarantine --> Gate{Confirmed batch drift?}
-  Gate -->|no| Preserve[Keep last verified card]
-  Gate -->|yes| Refactor[Refactor same c_* collector]
-  Refactor --> Preview[Schema + count preview]
-  Preview --> Approval[Human approval]
-  Approval --> Rerun[Rerun same c_* collector]
-  Rerun --> Evidence[Recovery hashes and counts]
-  Evidence --> API
+flowchart TB
+    User[Person using the browser]
+    Web["apps/web<br/>Search and card UI"]
+    API["services/collector-worker<br/>HTTP API and pipeline"]
+    Index["Validated player index<br/>Search cache"]
+    Bright["packages/brightdata<br/>Trigger, poll, and map"]
+    Source["StatBunker<br/>Public football pages"]
+    Contracts["packages/contracts<br/>Zod schemas"]
+    Validation["packages/validation<br/>Hashes and checks"]
+    Snapshot["Versioned snapshot<br/>Card data and provenance"]
+    Card["Verified card<br/>Totals and match history"]
+    Quarantine["Quarantine<br/>Bad or incomplete batch"]
+    Repair["Same collector repair<br/>Preview and approval"]
+    LastGood["Last verified snapshot<br/>Keep it visible"]
+
+    User --> Web
+    Web --> API
+    API --> Index
+    Index --> Web
+    API --> Bright
+    Bright --> Source
+    Source --> Bright
+    Bright --> Contracts
+    Bright --> Validation
+    Contracts --> API
+    Validation --> API
+    API --> Snapshot
+    Snapshot --> Card
+    Card --> Web
+    Contracts --> Quarantine
+    Quarantine --> Repair
+    Repair --> Bright
+    Quarantine --> LastGood
+    LastGood --> Card
 ```
 
-## Searchable card generator
+## What happens during search
 
-The one-player demo became search → season → generate:
+Search is designed to feel instant without making a paid provider request for
+every character typed.
 
-- **Search index.** Player and club lookup is served from a validated local
-  cache. On a cold process, page load or the first real query automatically
-  prepares the current verified season through Bright Data. Concurrent calls
-  share that one preparation; later keystrokes never trigger one provider run
-  each.
-- **Season registry.** Only the verified StatBunker Premier League seasons are
-  selectable (2023/24 `comp_id=745`, 2024/25 `596`, 2025/26 `776`,
-  2026/27 `791` at
-  `https://www.statbunker.com/competitions/PlayerStandings?comp_id=<id>`).
-  Unknown seasons fail closed: no URL is guessed and no collection runs.
-  2026/27 is current and incomplete, so its match availability may be partial
-  and the card says so rather than filling gaps.
-- **Generation.** One explicit action per generation. With a proven numeric
-  player ID, a fresh real collection targets the selected player's verified
-  `SeasonMatches` URL. A list-only identity instead uses the public exact-name
-  search URL as the collector input; the same run must prove exactly one
-  numeric ID, navigate its canonical season-match URL, and repeat both on
-  every row. Either way there is one billable trigger → poll → map every match
-  → validate/quarantine → derive totals, or a cache hit. The response and run
-  status record which path produced the card.
-- **Async run status.** Generation returns a run identifier immediately and
-  clients poll scrape status. Stages are reported truthfully — including the
-  exact failing stage — and a failed or quarantined collection never becomes
-  fixture/demo data. The last verified card stays visible until a valid new
-  snapshot replaces it.
+1. The API prepares one verified season index when it is cold.
+2. Bright Data collects the StatBunker player standings page.
+3. The API validates the returned rows and stores a local search index.
+4. Player and club searches read that index.
+5. Concurrent index requests share the same preparation instead of starting
+   duplicate collections.
 
-## Cache freshness
+The browser never receives a Bright Data credential.
 
-Cached cards are previously collected snapshots, not guesses: a hit serves the
-last validated snapshot with its original provenance (source URL, season,
-snapshot version, hash, observed time), and staleness is shown, not hidden.
-Automatic season-index preparation and a stale/missing generation are the only
-billable paths; both are cached, deduplicated, rate-limited, and pass through
-the same validation, quarantine, and batch-level healing gates as any live run.
-Freshness is checked on an explicit Generate action with a default 15-minute
-TTL; there is no in-match background scheduler.
-Because StatBunker updates after match completion, CardPulse is post-match
-freshness rather than second-by-second score tracking.
+## What happens during generation
 
-If exact-name resolution or player-specific match extraction drifts, its
-source ID retains the exact resolver/match target and selected player-season
-context in process memory. The protected healing routes accept that source
-ID, require the repaired preview to prove the same exact numeric identity and
-canonical match URL, preserve the human approval gate, and rerun the same
-collector against the same target before recording recovery evidence.
+Generation is an explicit action because it may start a live collection.
 
-## Snapshot provenance
+1. The browser sends a selected player and verified season.
+2. The API checks that the season is in the registry.
+3. If the player index has a numeric StatBunker ID, the collector requests the
+   player-specific `SeasonMatches` page.
+4. If the index only has a list row, the collector uses the exact-name search
+   branch. It must prove exactly one numeric player ID before continuing.
+5. The mapper converts each returned row into the shared football model.
+6. Strict contracts check identity, season, dates, scores, and statistics.
+7. A valid batch becomes a versioned snapshot with source metadata and a
+   payload hash.
+8. The browser renders totals, match history, and provenance.
 
-Every generated card carries its snapshot lineage: source ID and URL shape,
-season/`comp_id`, mapper acceptance, snapshot version, and SHA-256 payload
-hash. Comparison views keep each season's provenance separate so a cached
-2024/25 card can never be confused with a freshly collected 2025/26 card.
+## What happens when the source changes
 
-## Match history and unavailability
+The local chaos source makes this easy to test. It can keep the same football
+data while changing the HTML layout, amend a statistic, or return an outage.
 
-Generation validates the selected player's season-bound completed-match rows
-and derives card totals from the accepted set. The incomplete 2026/27 season
-may legitimately contain fewer matches than a completed campaign. When the
-source publishes no usable rows, the card keeps its last verified version and
-the match panel reports the gap instead of inventing fixtures or zero-filling.
+- A malformed row is quarantined.
+- A failed batch cannot replace a verified card.
+- A confirmed layout change can start a repair for the same Bright Data
+  collector.
+- The repaired collector must produce a valid preview.
+- A human approves the preview before the collector is rerun.
+- Recovery evidence records the result.
 
-## Boundaries
+This is why the last verified card stays on screen during a scraper failure.
 
-### `packages/contracts`
-
-The single source of truth. Runtime Zod schemas and inferred TypeScript types
-cover:
-
-- `PlayerCard`: identity, club, position, season, appearances, goals, assists,
-  cards, and minutes;
-- `PlayerMatchRecord`: player/season-bound match identity, score, appearance,
-  goals, assists, minutes, and discipline;
-- `TeamSummaryRecord`: public club metadata;
-- `StandingEntry`: rank, record, goals, and points, including arithmetic
-  consistency checks;
-- `FootballSnapshot`, `FootballChangeEvent`, `QuarantinedExtraction`,
-  `SourceHealth`, and `RecoveryEvidence`;
-- typed, paginated API envelopes.
-
-All schemas are strict. Unknown output fields fail closed.
-
-### `packages/brightdata`
-
-Owns the external HTTP boundary and football row mapper. Collection calls
-`/dca/trigger` with `queue_next=1`, captures `collection_id`, and polls
-`/dca/dataset`. Healing uses the same first-class `c_*` collector for
-`refactor_template`, structured progress/preview, and
-`resume_automation_job`. Requests have time bounds, retry only transient
-failures, and expose sanitized typed errors.
-
-### `services/collector-worker`
-
-Owns validation, in-memory stores, batch drift classification, semantic
-diffing, source health, the healing coordinator, and the HTTP API.
-
-Snapshot hashes exclude `observedAt`, so another successful poll of identical
-business data updates health without manufacturing a new material version.
-One malformed row is quarantined but cannot trigger a repair. An empty first
-run also cannot trigger a repair. Healing requires a verified count collapse,
-a structural majority after a baseline, or a repeated structural signature
-before a baseline exists.
-
-### `apps/chaos-source`
-
-Provides one stable public path, `/players`. Its controlled states are
-`baseline-table`, `drift-cards`, `amended-stats`, and `unavailable`. The first
-two contain identical business data in different DOM structures. The control
-route is local demo tooling and must not be exposed publicly.
+## Repository boundaries
 
 ### `apps/web`
 
-Consumes the typed API and renders the searchable card experience: ARIA
-combobox player search, verified-season picker, front/back cards with explicit
-flip, season comparison, run-status display, team summaries, standings,
-provenance, quarantine, healing state, and recovery evidence. The browser UI is
-zero-credential and live-only, refuses demo-marked card payloads, honors
-`prefers-reduced-motion`, and works by keyboard and touch without photos, logos,
-or shot coordinates.
+The browser application. It owns the search combobox, season picker, card
+front, card back, provenance drawer, reliability timeline, and accessibility
+behavior.
 
-## Frozen contracts
+### `services/collector-worker`
 
-Search results, season entries, generation runs, scrape status stages, and
-generated cards all cross strict Zod schemas in `packages/contracts`. Unknown
-fields fail closed, stage names are a closed vocabulary, and cached versus
-freshly collected provenance is part of the contract — so UI code cannot blur
-the line between a live collection and a cache hit.
+The API and the main workflow. It owns index preparation, generation runs,
+cache freshness, snapshots, quarantine, source health, and healing routes.
 
-## Security and MVP limits
+### `packages/brightdata`
 
-- State is in memory and resets when the process stops.
-- There is no scheduler, durable queue/database, account system, or alerting.
-- Public live index preparation and generation require an explicit server-side
-  flag and are cached, deduplicated, and rate-limited per client.
-- Provider credentials and the strong admin token are environment-only. The
-  browser never receives or requests them; the token protects only separate
-  healing and development mutation routes.
-- Tests use deterministic providers. Live Bright Data behavior needs a
-  separately captured credentialed evidence trail before it is claimed.
+The external provider boundary. It sends collection requests, polls for
+results, maps StatBunker rows, and handles the same-collector repair flow.
+
+### `packages/contracts`
+
+The shared data contract. Zod schemas make the accepted shape explicit for
+players, teams, standings, matches, cards, snapshots, and API responses.
+
+### `packages/validation`
+
+Stable serialization, hashes, and extraction checks. Snapshot hashes ignore
+observation time so the same football data does not create a fake new version.
+
+### `apps/chaos-source`
+
+A local source simulator for testing normal pages, layout drift, changed
+statistics, and outages without relying on a live website.
+
+## Trust and security boundaries
+
+- Provider tokens are server-side environment variables.
+- The browser talks to the API, not directly to Bright Data.
+- The public live mutation switch is explicit and disabled in local mock mode.
+- Healing and development routes require a separate operator token.
+- Unknown seasons fail closed instead of producing guessed URLs.
+- The application uses original art and does not download player photos or
+  club marks.
+
+## Current scope
+
+CardPulse is intentionally small. It does not include a database, durable job
+queue, login system, scheduler, or background score polling. Runtime snapshots
+are held in memory, and current-season history can be incomplete while the
+football season is still being played.
