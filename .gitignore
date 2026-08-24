@@ -8,3 +8,4 @@ coverage/
 .env.*
 !.env.example
 apps/web/archetype-preview/
+docs/demo-video-script.md
