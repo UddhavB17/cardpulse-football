@@ -14,7 +14,7 @@ produced it.
 ## See it in action
 
 Open the [live demo](https://cardpulse-football-web.onrender.com), search for
-**Erling Haaland**, choose **2025/26**, and select **Generate live card**.
+any player, choose a season, and select **Generate live card**.
 
 <table>
   <tr>
