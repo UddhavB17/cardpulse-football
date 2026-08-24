@@ -617,6 +617,7 @@ describe("BrightDataCollectionProvider with the StatBunker row mapper", () => {
     const provider = new BrightDataCollectionProvider({
       apiToken: "test-token",
       collectorId: "c_statbunker_test",
+      overrideIncompatibleSchema: true,
       rowMapper: createStatBunkerPipelineRowMapper(),
       fetchFn: mockFetch as unknown as typeof fetch,
       maxRetries: 0,
@@ -629,6 +630,9 @@ describe("BrightDataCollectionProvider with the StatBunker row mapper", () => {
       requestedAt: observedAt,
     });
 
+    expect(mockFetch.mock.calls[0]?.[0]).toContain(
+      "override_incompatible_schema=1",
+    );
     expect(batch.collectorId).toBe("c_statbunker_test");
     expect(batch.sourceId).toBe("statbunker-football-public");
     expect(batch.payloads).toHaveLength(2);

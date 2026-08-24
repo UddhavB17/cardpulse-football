@@ -163,6 +163,7 @@ export function createRuntimeFromEnv(
   const collectionProvider = new BrightDataCollectionProvider({
     apiToken,
     collectorId,
+    overrideIncompatibleSchema: useStatBunkerBoundary,
     ...(useStatBunkerBoundary
       ? { rowMapper: createStatBunkerPipelineRowMapper() }
       : {}),
